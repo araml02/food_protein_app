@@ -25,7 +25,7 @@ class ProteinApp extends StatelessWidget {
         builder: (context, snapshot) {
           final session = snapshot.data?.session;
           if (session != null) {
-            return const MainScreen(); // Ingelogd? Ga naar het hoofdscherm met tabs
+            return const MainScreen(); // Logged in? Go to main screen with tabs
           } else {
             return const LoginPage();
           }
@@ -35,7 +35,7 @@ class ProteinApp extends StatelessWidget {
   }
 }
 
-// --- HOOFDSCHERM MET TABS ---
+// --- MAIN SCREEN WITH TABS ---
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
   @override
@@ -45,7 +45,7 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
   
-  // De twee hoofdpagina's
+  // The two main pages
   final List<Widget> _pages = [
     const SearchPage(),
     const CommunityPage(),
@@ -62,7 +62,7 @@ class _MainScreenState extends State<MainScreen> {
         selectedIndex: _currentIndex,
         onDestinationSelected: (idx) => setState(() => _currentIndex = idx),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.fitness_center), label: 'Producten'),
+          NavigationDestination(icon: Icon(Icons.fitness_center), label: 'Products'),
           NavigationDestination(icon: Icon(Icons.group), label: 'Community'),
         ],
       ),
@@ -70,7 +70,7 @@ class _MainScreenState extends State<MainScreen> {
   }
 }
 
-// --- TAB 1: PRODUCTEN ZOEKEN (Jouw bestaande pagina) ---
+// --- TAB 1: SEARCH FOR PRODUCTS (Your existing page) ---
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
   @override
@@ -97,10 +97,10 @@ class _SearchPageState extends State<SearchPage> {
 
     try {
       await _supabase.from('favorites').insert({'user_id': user.id, 'product_code': productCode});
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Toegevoegd aan favorieten!")));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Added to favorites!")));
     } catch (e) {
       await _supabase.from('favorites').delete().match({'user_id': user.id, 'product_code': productCode});
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Verwijderd uit favorieten")));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Removed from favorites")));
       if (_showOnlyFavorites) _runSearch();
     }
   }
@@ -180,7 +180,7 @@ class _SearchPageState extends State<SearchPage> {
         }
       });
     } catch (e) {
-      debugPrint("Fout: $e");
+      debugPrint("Error: $e");
     } finally {
       setState(() => _loading = false);
     }
@@ -191,7 +191,7 @@ class _SearchPageState extends State<SearchPage> {
       await _supabase.from('prices').insert({'product_code': code, 'price': price, 'store_name': store});
       _runSearch(); 
       if (mounted) Navigator.pop(context);
-    } catch (e) { debugPrint("Fout: $e"); }
+    } catch (e) { debugPrint("Error: $e"); }
   }
 
   void _showPriceDialog(String code) {
@@ -204,7 +204,7 @@ class _SearchPageState extends State<SearchPage> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: priceCont, decoration: const InputDecoration(labelText: "Prijs (€)"), keyboardType: const TextInputType.numberWithOptions(decimal: true)),
+            TextField(controller: priceCont, decoration: const InputDecoration(labelText: "Price (€)"), keyboardType: const TextInputType.numberWithOptions(decimal: true)),
             DropdownButtonFormField<String>(
               value: store,
               items: ["Albert Heijn", "Jumbo", "Delhaize", "Aldi", "Lidl", "Colruyt"].map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
@@ -213,11 +213,11 @@ class _SearchPageState extends State<SearchPage> {
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Annuleer")),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
           ElevatedButton(onPressed: () {
               final p = double.tryParse(priceCont.text.replaceFirst(',', '.'));
               if (p != null) _submitPrice(code, p, store);
-            }, child: const Text("Opslaan")),
+            }, child: const Text("Save")),
         ],
       ),
     );
@@ -237,12 +237,12 @@ class _SearchPageState extends State<SearchPage> {
             Text(prod['brand'] ?? '', style: TextStyle(color: Colors.grey[600])),
             const SizedBox(height: 20),
             Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
-              _stat("${prod['p']}g", "Eiwit", Colors.green),
+              _stat("${prod['p']}g", "Protein", Colors.green),
               _stat("${prod['kcal'].toInt()}", "Kcal", Colors.blue),
             ]),
             const Divider(),
             ...prices.map((pr) => ListTile(title: Text(pr['store_name']), trailing: Text("€${pr['price']}"))),
-            ElevatedButton(onPressed: () => _showPriceDialog(prod['code']), child: const Text("Prijs toevoegen")),
+            ElevatedButton(onPressed: () => _showPriceDialog(prod['code']), child: const Text("Add Price")),
           ],
         ),
       ),
@@ -258,9 +258,9 @@ class _SearchPageState extends State<SearchPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-          title: const Text("Eiwit Bijbel ☁️"),
+          title: const Text("Protein Bible ☁️"),
           actions: [
-            // NIEUWE PROFIEL KNOP
+            // NEW PROFILE BUTTON
             IconButton(
               icon: const Icon(Icons.person_outline),
               onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (c) => const ProfilePage())),
@@ -277,7 +277,7 @@ class _SearchPageState extends State<SearchPage> {
           child: TextField(
             controller: _searchController,
             decoration: InputDecoration(
-              hintText: "Zoek eiwit...",
+              hintText: "Search protein...",
               prefixIcon: const Icon(Icons.search),
               suffixIcon: IconButton(icon: const Icon(Icons.qr_code_scanner), onPressed: _openScanner),
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(20)),
@@ -290,7 +290,7 @@ class _SearchPageState extends State<SearchPage> {
           padding: const EdgeInsets.only(left: 12),
           child: Row(children: [
             FilterChip(
-              label: const Text("❤️ Favorieten"),
+              label: const Text("❤️ Favorites"),
               selected: _showOnlyFavorites,
               onSelected: (v) => setState(() { _showOnlyFavorites = v; _runSearch(); }),
               selectedColor: Colors.red[100],
@@ -298,15 +298,15 @@ class _SearchPageState extends State<SearchPage> {
             const SizedBox(width: 8),
             ChoiceChip(label: const Text("Ratio"), selected: _sortBy == 'efficiency', onSelected: (s) { if(s) setState(() {_sortBy='efficiency'; _runSearch();}); }),
             const SizedBox(width: 8),
-            ChoiceChip(label: const Text("Eiwit"), selected: _sortBy == 'protein', onSelected: (s) { if(s) setState(() {_sortBy='protein'; _runSearch();}); }),
+            ChoiceChip(label: const Text("Protein"), selected: _sortBy == 'protein', onSelected: (s) { if(s) setState(() {_sortBy='protein'; _runSearch();}); }),
           ]),
         ),
-        // Vervang je huidige Expanded(...) met dit blok:
+        // Replace your current Expanded(...) with this block:
 Expanded(
   child: _loading 
     ? const Center(child: CircularProgressIndicator())
     : _results.isEmpty 
-      // CASE 1: GEEN RESULTATEN -> TOON KNOP
+      // CASE 1: NO RESULTS -> SHOW BUTTON
       ? Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -314,32 +314,32 @@ Expanded(
               const Icon(Icons.search_off, size: 60, color: Colors.grey),
               const SizedBox(height: 20),
               Text(
-                "Geen producten gevonden voor\n'${_searchController.text}'",
+                "No products found for\n'${_searchController.text}'",
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 16, color: Colors.grey),
               ),
               const SizedBox(height: 20),
               ElevatedButton.icon(
                 onPressed: () async {
-                  // Check of de zoekterm een barcode is (alleen cijfers)
+                  // Check if the search term is a barcode (numbers only)
                   String? initialCode;
                   if (RegExp(r'^[0-9]+$').hasMatch(_searchController.text.trim())) {
                     initialCode = _searchController.text.trim();
                   }
                   
-                  // Ga naar het toevoeg scherm
+                  // Go to the add product screen
                   final bool? added = await Navigator.push(
                     context, 
                     MaterialPageRoute(builder: (context) => AddProductPage(initialCode: initialCode))
                   );
                   
-                  // Als we terugkomen en er is iets toegevoegd, ververs dan de zoekopdracht
+                  // If we come back and something was added, refresh the search
                   if (added == true) {
                     _runSearch();
                   }
                 },
                 icon: const Icon(Icons.add_circle),
-                label: const Text("Voeg dit product toe"),
+                label: const Text("Add this product"),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.green, 
                   foregroundColor: Colors.white,
@@ -349,14 +349,14 @@ Expanded(
             ],
           ),
         )
-      // CASE 2: WEL RESULTATEN -> TOON LIJST (Je oude ListView code)
+      // CASE 2: RESULTS FOUND -> SHOW LIST (Your old ListView code)
       : ListView.builder(
           itemCount: _results.length,
           itemBuilder: (c, i) {
             final p = _results[i];
             double score = p['kcal'] > 0 ? (p['p'] / p['kcal']) * 100 : 0;
             
-            // ... (Je bestaande prijs logica hier laten staan) ...
+            // ... (Your existing price logic here) ...
             List prices = p['prices'] ?? [];
             String? cheapestProteinInfo;
             if (prices.isNotEmpty && (p['p'] ?? 0) > 0) {
@@ -366,9 +366,9 @@ Expanded(
                 double pricePerGram = currentPrice / p['p'];
                 if (minPricePerGram == -1 || pricePerGram < minPricePerGram) minPricePerGram = pricePerGram;
               }
-              if (minPricePerGram > 0) cheapestProteinInfo = "€${minPricePerGram.toStringAsFixed(3)} /g eiwit";
+              if (minPricePerGram > 0) cheapestProteinInfo = "€${minPricePerGram.toStringAsFixed(3)} /g protein";
             }
-            // ... (Einde bestaande prijs logica) ...
+            // ... (End of existing price logic) ...
 
             return Card(
               margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -379,7 +379,7 @@ Expanded(
                 subtitle: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text("${p['brand']} • ${p['p']}g eiwit"),
+                    Text("${p['brand']} • ${p['p']}g protein"),
                     if (cheapestProteinInfo != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
@@ -409,7 +409,7 @@ Expanded(
   }
 }
 
-// --- TAB 2: COMMUNITY (NIEUW!) ---
+// --- TAB 2: COMMUNITY (NEW!) ---
 class CommunityPage extends StatefulWidget {
   const CommunityPage({super.key});
   @override
@@ -432,17 +432,17 @@ class _CommunityPageState extends State<CommunityPage> {
   setState(() => _loading = true);
   try {
     final currentUserId = _supabase.auth.currentUser!.id;
-    // We halen nu ook 'username' op
+    // We also fetch 'username' now
     var query = _supabase.from('profiles').select().neq('id', currentUserId);
     
     if (_userSearchController.text.isNotEmpty) {
-      // Zoek nu op username OF email
+      // Search on username OR email
       query = query.or('username.ilike.%${_userSearchController.text}%,email.ilike.%${_userSearchController.text}%');
     }
 
     final res = await query.limit(20);
     setState(() => _users = res);
-  } catch (e) { debugPrint("Fout: $e"); }
+  } catch (e) { debugPrint("Error: $e"); }
   finally { setState(() => _loading = false); }
 }
 
@@ -456,7 +456,7 @@ class _CommunityPageState extends State<CommunityPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Vind gebruikers 👥")),
+      appBar: AppBar(title: const Text("Find users 👥")),
       body: Column(
         children: [
           Padding(
@@ -464,7 +464,7 @@ class _CommunityPageState extends State<CommunityPage> {
             child: TextField(
               controller: _userSearchController,
               decoration: InputDecoration(
-                labelText: "Zoek op email...",
+                labelText: "Search by email...",
                 prefixIcon: const Icon(Icons.person_search),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(20)),
               ),
@@ -485,9 +485,9 @@ class _CommunityPageState extends State<CommunityPage> {
                           backgroundColor: Colors.green[100],
                           child: Text((user['username'] ?? user['email'])[0].toUpperCase()),
                         ),
-                        // TOON USERNAME INDIEN BESCHIKBAAR, ANDERS EMAIL
+                        // SHOW USERNAME IF AVAILABLE, OTHERWISE EMAIL
                         title: Text(user['username'] ?? user['email'].split('@')[0]), 
-                        subtitle: Text(user['username'] != null ? "Eiwit-fanaat" : "Nog geen username"),
+                        subtitle: Text(user['username'] != null ? "Protein fanatic" : "No username yet"),
                         trailing: const Icon(Icons.arrow_forward_ios, size: 16),
                         onTap: () => _viewUserFavorites(user),
                       ) ,
@@ -501,7 +501,7 @@ class _CommunityPageState extends State<CommunityPage> {
   }
 }
 
-// --- PAGINA: FAVORIETEN VAN IEMAND ANDERS BEKIJKEN ---
+// --- PAGE: VIEW SOMEONE ELSE'S FAVORITES ---
 class UserFavoritesPage extends StatefulWidget {
   final String userId;
   final String userEmail;
@@ -527,20 +527,20 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
     try {
       final res = await _supabase
           .from('favorites')
-          .select('products (*, prices(*))') // We halen nu ook de prijzen op!
+          .select('products (*, prices(*))') // We also fetch the prices now!
           .eq('user_id', widget.userId);
 
       setState(() {
         _products = (res as List).map((e) => e['products']).where((e) => e != null).toList();
       });
     } catch (e) {
-      debugPrint("Fout bij laden favorieten: $e");
+      debugPrint("Error loading favorites: $e");
     } finally {
       setState(() => _loading = false);
     }
   }
 
-  // --- DETAIL FUNCTIES (Gekopieerd en aangepast voor deze pagina) ---
+  // --- DETAIL FUNCTIONS (Copied and adjusted for this page) ---
   
   Future<void> _submitPrice(String code, double price, String store) async {
     try {
@@ -549,10 +549,10 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
         'price': price,
         'store_name': store,
       });
-      _loadUserFavorites(); // Lijst verversen na toevoegen
+      _loadUserFavorites(); // Refresh list after adding
       if (mounted) Navigator.pop(context);
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Prijs opgeslagen!")));
-    } catch (e) { debugPrint("Fout: $e"); }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Price saved!")));
+    } catch (e) { debugPrint("Error: $e"); }
   }
 
   void _showPriceDialog(String code) {
@@ -561,26 +561,26 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text("Prijs melden"),
+        title: const Text("Report price"),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: priceCont, decoration: const InputDecoration(labelText: "Prijs (€)"), keyboardType: const TextInputType.numberWithOptions(decimal: true)),
+            TextField(controller: priceCont, decoration: const InputDecoration(labelText: "Price (€)"), keyboardType: const TextInputType.numberWithOptions(decimal: true)),
             const SizedBox(height: 10),
             DropdownButtonFormField<String>(
               value: store,
               items: ["Albert Heijn", "Jumbo", "Delhaize", "Aldi", "Lidl", "Colruyt"].map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
               onChanged: (v) => store = v!,
-              decoration: const InputDecoration(labelText: "Winkel"),
+              decoration: const InputDecoration(labelText: "Store"),
             )
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Annuleer")),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
           ElevatedButton(onPressed: () {
               final p = double.tryParse(priceCont.text.replaceFirst(',', '.'));
               if (p != null) _submitPrice(code, p, store);
-            }, child: const Text("Opslaan")),
+            }, child: const Text("Save")),
         ],
       ),
     );
@@ -598,19 +598,19 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(prod['name'], style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
-            Text(prod['brand'] ?? 'Onbekend merk', style: TextStyle(fontSize: 16, color: Colors.grey[600])),
+            Text(prod['brand'] ?? 'Unknown brand', style: TextStyle(fontSize: 16, color: Colors.grey[600])),
             const Divider(height: 30),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
-                _stat("Eiwit", "${prod['p']}g", Colors.green),
+                _stat("Protein", "${prod['p']}g", Colors.green),
                 _stat("Kcal", "${prod['kcal'].toInt()}", Colors.blue),
                 _stat("Ratio", (prod['p'] / prod['kcal'] * 100).toStringAsFixed(1), Colors.purple),
               ],
             ),
             const Divider(height: 30),
-            const Text("Prijzen van gebruikers", style: TextStyle(fontWeight: FontWeight.bold)),
-            if (prices.isEmpty) const Padding(padding: EdgeInsets.all(15), child: Text("Nog geen prijzen bekend...")),
+            const Text("User prices", style: TextStyle(fontWeight: FontWeight.bold)),
+            if (prices.isEmpty) const Padding(padding: EdgeInsets.all(15), child: Text("No prices known yet...")),
             ...prices.map((pr) => ListTile(
               leading: const Icon(Icons.store, color: Colors.green),
               title: Text(pr['store_name']),
@@ -622,7 +622,7 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
               child: ElevatedButton.icon(
                 onPressed: () => _showPriceDialog(prod['code']),
                 icon: const Icon(Icons.add_shopping_cart),
-                label: const Text("Voeg prijs toe"),
+                label: const Text("Add price"),
               ),
             ),
           ],
@@ -639,18 +639,18 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text("Lijst van ${widget.userEmail.split('@')[0]}")),
+      appBar: AppBar(title: Text("List of ${widget.userEmail.split('@')[0]}")),
       body: _loading 
         ? const Center(child: CircularProgressIndicator())
         : _products.isEmpty 
-          ? const Center(child: Text("Deze gebruiker heeft nog geen favorieten."))
+          ? const Center(child: Text("This user has no favorites yet."))
           : ListView.builder(
               itemCount: _products.length,
               itemBuilder: (context, index) {
                 final p = _products[index];
                 double score = p['kcal'] > 0 ? (p['p'] / p['kcal']) * 100 : 0;
                 
-                // Bereken goedkoopste prijs (optioneel, voor de subtitel)
+                // Calculate cheapest price (optional, for the subtitle)
                 List prices = p['prices'] ?? [];
                 String? cheapestInfo;
                  if (prices.isNotEmpty && (p['p'] ?? 0) > 0) {
@@ -659,7 +659,7 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
                     double pp = (pr['price'] ?? 0).toDouble() / p['p'];
                     if (min == -1 || pp < min) min = pp;
                   }
-                  if (min > 0) cheapestInfo = "€${min.toStringAsFixed(3)} /g eiwit";
+                  if (min > 0) cheapestInfo = "€${min.toStringAsFixed(3)} /g protein";
                 }
 
                 return Card(
@@ -671,13 +671,13 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
                     subtitle: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text("${p['brand']} • ${p['p']}g eiwit"),
+                        Text("${p['brand']} • ${p['p']}g protein"),
                         if (cheapestInfo != null) Text(cheapestInfo, style: const TextStyle(color: Colors.blueGrey, fontSize: 12))
                       ],
                     ),
                     trailing: Text("Score: ${score.toStringAsFixed(0)}", style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
                     
-                    // DEZE REGEL MISTE:
+                    // THIS LINE WAS MISSING:
                     onTap: () => _showDetails(p),
                   ),
                 );
@@ -705,9 +705,9 @@ class _LoginPageState extends State<LoginPage> {
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
-      // De StreamBuilder in main.dart regelt de rest
+      // The StreamBuilder in main.dart handles the rest
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Fout: $e"), backgroundColor: Colors.red));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e"), backgroundColor: Colors.red));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -724,12 +724,12 @@ class _LoginPageState extends State<LoginPage> {
           children: [
             const Icon(Icons.fitness_center, size: 80, color: Colors.green),
             const SizedBox(height: 20),
-            const Text("Eiwit Bijbel", textAlign: TextAlign.center, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+            const Text("Protein Bible", textAlign: TextAlign.center, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
             const SizedBox(height: 40),
             
             TextField(controller: _emailController, decoration: const InputDecoration(labelText: "Email", border: OutlineInputBorder(), prefixIcon: Icon(Icons.email))),
             const SizedBox(height: 15),
-            TextField(controller: _passwordController, decoration: const InputDecoration(labelText: "Wachtwoord", border: OutlineInputBorder(), prefixIcon: Icon(Icons.lock)), obscureText: true),
+            TextField(controller: _passwordController, decoration: const InputDecoration(labelText: "Password", border: OutlineInputBorder(), prefixIcon: Icon(Icons.lock)), obscureText: true),
             
             const SizedBox(height: 25),
             
@@ -743,17 +743,17 @@ class _LoginPageState extends State<LoginPage> {
                 
             const SizedBox(height: 20),
             
-            // HIER IS DE AANPASSING:
+            // HERE IS THE ADJUSTMENT:
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Text("Nog geen account?"),
+                const Text("Don't have an account?"),
                 TextButton(
                   onPressed: () {
-                    // Ga naar het nieuwe registratie scherm
+                    // Go to the new registration screen
                     Navigator.push(context, MaterialPageRoute(builder: (context) => const SignUpPage()));
                   },
-                  child: const Text("Maak er hier een!"),
+                  child: const Text("Create one here!"),
                 )
               ],
             )
@@ -765,9 +765,9 @@ class _LoginPageState extends State<LoginPage> {
 }
 
 
-// --- NIEUW: PAGINA OM PRODUCTEN TOE TE VOEGEN ---
+// --- NEW: PAGE TO ADD PRODUCTS ---
 class AddProductPage extends StatefulWidget {
-  final String? initialCode; // De barcode die we al gescand hebben
+  final String? initialCode; // The barcode we already scanned
 
   const AddProductPage({super.key, this.initialCode});
 
@@ -799,27 +799,27 @@ class _AddProductPageState extends State<AddProductPage> {
     try {
       final supabase = Supabase.instance.client;
       
-      // Data voorbereiden
+      // Prepare data
       final productData = {
         'code': _codeController.text.trim(),
         'name': _nameController.text.trim(),
         'brand': _brandController.text.trim(),
         'p': double.parse(_pController.text.replaceAll(',', '.')),
         'kcal': double.parse(_kcalController.text.replaceAll(',', '.')),
-        'c': 0, // Optioneel: later toevoegen
-        'f': 0, // Optioneel: later toevoegen
+        'c': 0, // Optional: add later
+        'f': 0, // Optional: add later
       };
 
-      // Opslaan in Supabase
+      // Save to Supabase
       await supabase.from('products').insert(productData);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Product succesvol toegevoegd!")));
-        Navigator.pop(context, true); // True betekent: we hebben iets toegevoegd
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Product successfully added!")));
+        Navigator.pop(context, true); // True means: we added something
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Fout: $e. Bestaat deze code al?"), backgroundColor: Colors.red));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e. Does this code already exist?"), backgroundColor: Colors.red));
       }
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -829,7 +829,7 @@ class _AddProductPageState extends State<AddProductPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Nieuw Product 🆕")),
+      appBar: AppBar(title: const Text("New Product 🆕")),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Form(
@@ -837,31 +837,31 @@ class _AddProductPageState extends State<AddProductPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Text("Help de community en voeg een ontbrekende eiwit-topper toe!", style: TextStyle(fontSize: 16, color: Colors.grey)),
+              const Text("Help the community and add a missing protein staple!", style: TextStyle(fontSize: 16, color: Colors.grey)),
               const SizedBox(height: 20),
               
-              // Barcode (Alleen-lezen als hij gescand is, anders aanpasbaar)
+              // Barcode (Read-only if scanned, otherwise editable)
               TextFormField(
                 controller: _codeController,
                 decoration: const InputDecoration(labelText: "Barcode", border: OutlineInputBorder(), prefixIcon: Icon(Icons.qr_code)),
-                validator: (v) => v == null || v.isEmpty ? "Barcode is verplicht" : null,
+                validator: (v) => v == null || v.isEmpty ? "Barcode is required" : null,
               ),
               const SizedBox(height: 15),
 
-              // Naam en Merk
+              // Name and Brand
               TextFormField(
                 controller: _nameController,
-                decoration: const InputDecoration(labelText: "Productnaam (bijv. Skyr Vanille)", border: OutlineInputBorder(), prefixIcon: Icon(Icons.label)),
-                validator: (v) => v == null || v.isEmpty ? "Naam is verplicht" : null,
+                decoration: const InputDecoration(labelText: "Product name (e.g. Skyr Vanilla)", border: OutlineInputBorder(), prefixIcon: Icon(Icons.label)),
+                validator: (v) => v == null || v.isEmpty ? "Name is required" : null,
               ),
               const SizedBox(height: 15),
               TextFormField(
                 controller: _brandController,
-                decoration: const InputDecoration(labelText: "Merk (bijv. Melkunie)", border: OutlineInputBorder(), prefixIcon: Icon(Icons.branding_watermark)),
+                decoration: const InputDecoration(labelText: "Brand (e.g. Arla)", border: OutlineInputBorder(), prefixIcon: Icon(Icons.branding_watermark)),
               ),
               const SizedBox(height: 25),
               
-              const Text("Voedingswaarden (per 100g)", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+              const Text("Nutritional values (per 100g)", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
               const SizedBox(height: 15),
               
               Row(
@@ -870,8 +870,8 @@ class _AddProductPageState extends State<AddProductPage> {
                     child: TextFormField(
                       controller: _pController,
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      decoration: const InputDecoration(labelText: "Eiwit (g)", border: OutlineInputBorder(), suffixText: "g"),
-                      validator: (v) => v == null || v.isEmpty ? "Verplicht" : null,
+                      decoration: const InputDecoration(labelText: "Protein (g)", border: OutlineInputBorder(), suffixText: "g"),
+                      validator: (v) => v == null || v.isEmpty ? "Required" : null,
                     ),
                   ),
                   const SizedBox(width: 15),
@@ -879,8 +879,8 @@ class _AddProductPageState extends State<AddProductPage> {
                     child: TextFormField(
                       controller: _kcalController,
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      decoration: const InputDecoration(labelText: "Calorieën", border: OutlineInputBorder(), suffixText: "kcal"),
-                      validator: (v) => v == null || v.isEmpty ? "Verplicht" : null,
+                      decoration: const InputDecoration(labelText: "Calories", border: OutlineInputBorder(), suffixText: "kcal"),
+                      validator: (v) => v == null || v.isEmpty ? "Required" : null,
                     ),
                   ),
                 ],
@@ -892,7 +892,7 @@ class _AddProductPageState extends State<AddProductPage> {
                 child: ElevatedButton.icon(
                   onPressed: _loading ? null : _saveProduct,
                   icon: _loading ? const SizedBox() : const Icon(Icons.save),
-                  label: _loading ? const CircularProgressIndicator() : const Text("Opslaan in Database", style: TextStyle(fontSize: 18)),
+                  label: _loading ? const CircularProgressIndicator() : const Text("Save to Database", style: TextStyle(fontSize: 18)),
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
                 ),
               )
@@ -940,11 +940,11 @@ class _ProfilePageState extends State<ProfilePage> {
       }).eq('id', user!.id);
       
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Profiel bijgewerkt!")));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Profile updated!")));
         Navigator.pop(context);
       }
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Fout: Gebruikersnaam mogelijk al bezet.")));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: Username possibly already taken.")));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -953,21 +953,21 @@ class _ProfilePageState extends State<ProfilePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Mijn Profiel 👤")),
+      appBar: AppBar(title: const Text("My Profile 👤")),
       body: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
           children: [
-            const Text("Kies een publieke gebruikersnaam. Andere gebruikers zien deze naam in plaats van je email."),
+            const Text("Choose a public username. Other users will see this name instead of your email."),
             const SizedBox(height: 20),
             TextField(
               controller: _usernameController,
-              decoration: const InputDecoration(labelText: "Gebruikersnaam", border: OutlineInputBorder()),
+              decoration: const InputDecoration(labelText: "Username", border: OutlineInputBorder()),
             ),
             const SizedBox(height: 20),
             _loading 
               ? const CircularProgressIndicator() 
-              : ElevatedButton(onPressed: _saveProfile, child: const Text("Opslaan")),
+              : ElevatedButton(onPressed: _saveProfile, child: const Text("Save")),
           ],
         ),
       ),
@@ -997,24 +997,24 @@ class _SignUpPageState extends State<SignUpPage> {
     
     setState(() => _loading = true);
     try {
-      // 1. Maak de gebruiker aan in Supabase Auth
+      // 1. Create the user in Supabase Auth
       final authRes = await _supabase.auth.signUp(
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
 
-      // Als de registratie is gelukt, hebben we nu een User ID
+      // If registration succeeded, we now have a User ID
       if (authRes.user != null) {
-        // 2. Update het profiel met de gebruikersnaam
-        // (De trigger in de database heeft de rij al gemaakt, wij vullen nu de naam in)
+        // 2. Update the profile with the username
+        // (The trigger in the database already created the row, we now fill in the name)
         await _supabase.from('profiles').update({
           'username': _usernameController.text.trim(),
         }).eq('id', authRes.user!.id);
 
         if (mounted) {
-          Navigator.pop(context); // Ga terug naar het inlogscherm (of direct door)
+          Navigator.pop(context); // Go back to login screen (or continue directly)
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Account aangemaakt! Je bent nu ingelogd.")),
+            const SnackBar(content: Text("Account created! You are now logged in.")),
           );
         }
       }
@@ -1032,22 +1032,22 @@ class _SignUpPageState extends State<SignUpPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Maak account")),
+      appBar: AppBar(title: const Text("Create account")),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Form(
           key: _formKey,
           child: Column(
             children: [
-              const Text("Kies een unieke naam en start je eiwit-reis!", 
+              const Text("Choose a unique name and start your protein journey!", 
                 textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)),
               const SizedBox(height: 20),
               
-              // Gebruikersnaam
+              // Username
               TextFormField(
                 controller: _usernameController,
-                decoration: const InputDecoration(labelText: "Gebruikersnaam", border: OutlineInputBorder(), prefixIcon: Icon(Icons.person)),
-                validator: (v) => v == null || v.length < 3 ? "Minimaal 3 tekens" : null,
+                decoration: const InputDecoration(labelText: "Username", border: OutlineInputBorder(), prefixIcon: Icon(Icons.person)),
+                validator: (v) => v == null || v.length < 3 ? "Minimum 3 characters" : null,
               ),
               const SizedBox(height: 15),
 
@@ -1055,16 +1055,16 @@ class _SignUpPageState extends State<SignUpPage> {
               TextFormField(
                 controller: _emailController,
                 decoration: const InputDecoration(labelText: "Email", border: OutlineInputBorder(), prefixIcon: Icon(Icons.email)),
-                validator: (v) => v == null || !v.contains('@') ? "Geldig emailadres vereist" : null,
+                validator: (v) => v == null || !v.contains('@') ? "Valid email address required" : null,
               ),
               const SizedBox(height: 15),
 
-              // Wachtwoord
+              // Password
               TextFormField(
                 controller: _passwordController,
                 obscureText: true,
-                decoration: const InputDecoration(labelText: "Wachtwoord", border: OutlineInputBorder(), prefixIcon: Icon(Icons.lock)),
-                validator: (v) => v == null || v.length < 6 ? "Minimaal 6 tekens" : null,
+                decoration: const InputDecoration(labelText: "Password", border: OutlineInputBorder(), prefixIcon: Icon(Icons.lock)),
+                validator: (v) => v == null || v.length < 6 ? "Minimum 6 characters" : null,
               ),
               const SizedBox(height: 25),
 
@@ -1074,7 +1074,7 @@ class _SignUpPageState extends State<SignUpPage> {
                 child: ElevatedButton(
                   onPressed: _loading ? null : _signUp,
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
-                  child: _loading ? const CircularProgressIndicator(color: Colors.white) : const Text("Registreer nu"),
+                  child: _loading ? const CircularProgressIndicator(color: Colors.white) : const Text("Register now"),
                 ),
               ),
             ],

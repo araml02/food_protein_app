@@ -31,13 +31,13 @@ class DatabaseHelper {
     ''');
   }
 
-  // Deze functie draai je één keer bij de eerste start van de app
+  // Run this function once at the first start of the app
   Future<void> importJsonIfNeeded() async {
     Database db = await database;
     var count = Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM products'));
     
     if (count == 0) {
-      print("Database is leeg. Import starten uit JSON (geduld aub)...");
+      print("Database is empty. Starting import from JSON (please be patient)...");
       final String response = await rootBundle.loadString('assets/eiwit_bijbel.json');
       final lines = response.split('\n');
       
@@ -56,13 +56,13 @@ class DatabaseHelper {
         }, conflictAlgorithm: ConflictAlgorithm.replace);
       }
       await batch.commit(noResult: true);
-      print("Import voltooid!");
+      print("Import completed!");
     }
   }
 
   // Future<List<Map<String, dynamic>>> searchProducts(String query) async {
   //   Database db = await database;
-  //   // We zoeken in de index, dit is milliseconden-werk
+  //   // We search in the index, this is millisecond work
   //   return await db.query(
   //     'products',
   //     where: 'name LIKE ? OR code = ?',
@@ -74,7 +74,7 @@ class DatabaseHelper {
   Future<List<Map<String, dynamic>>> searchProducts(String query) async {
   Database db = await database;
   
-  // We voegen de harde eis 'kcal > 0' toe aan de zoekopdracht
+  // We add the hard requirement 'kcal > 0' to the search query
   return await db.query(
     'products',
     where: '(name LIKE ? OR code = ?) AND kcal > 0',
