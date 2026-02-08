@@ -293,27 +293,109 @@ class _SearchPageState extends State<SearchPage> {
             ChoiceChip(label: const Text("Eiwit"), selected: _sortBy == 'protein', onSelected: (s) { if(s) setState(() {_sortBy='protein'; _runSearch();}); }),
           ]),
         ),
-        Expanded(
-          child: _loading ? const Center(child: CircularProgressIndicator()) : ListView.builder(
-            itemCount: _results.length,
-            itemBuilder: (c, i) {
-              final p = _results[i];
-              double score = p['kcal'] > 0 ? (p['p'] / p['kcal']) * 100 : 0;
-              return Card(
-                margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                child: ListTile(
-                  title: Text(p['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
-                  subtitle: Text("${p['brand']} • ${p['p']}g eiwit"),
-                  trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                    IconButton(icon: const Icon(Icons.favorite_border, color: Colors.red), onPressed: () => _toggleFavorite(p['code'])),
-                    Text(score.toStringAsFixed(0), style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
-                  ]),
-                  onTap: () => _showDetails(p),
+        // Vervang je huidige Expanded(...) met dit blok:
+Expanded(
+  child: _loading 
+    ? const Center(child: CircularProgressIndicator())
+    : _results.isEmpty 
+      // CASE 1: GEEN RESULTATEN -> TOON KNOP
+      ? Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.search_off, size: 60, color: Colors.grey),
+              const SizedBox(height: 20),
+              Text(
+                "Geen producten gevonden voor\n'${_searchController.text}'",
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 16, color: Colors.grey),
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton.icon(
+                onPressed: () async {
+                  // Check of de zoekterm een barcode is (alleen cijfers)
+                  String? initialCode;
+                  if (RegExp(r'^[0-9]+$').hasMatch(_searchController.text.trim())) {
+                    initialCode = _searchController.text.trim();
+                  }
+                  
+                  // Ga naar het toevoeg scherm
+                  final bool? added = await Navigator.push(
+                    context, 
+                    MaterialPageRoute(builder: (context) => AddProductPage(initialCode: initialCode))
+                  );
+                  
+                  // Als we terugkomen en er is iets toegevoegd, ververs dan de zoekopdracht
+                  if (added == true) {
+                    _runSearch();
+                  }
+                },
+                icon: const Icon(Icons.add_circle),
+                label: const Text("Voeg dit product toe"),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green, 
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12)
                 ),
-              );
-            },
+              )
+            ],
           ),
+        )
+      // CASE 2: WEL RESULTATEN -> TOON LIJST (Je oude ListView code)
+      : ListView.builder(
+          itemCount: _results.length,
+          itemBuilder: (c, i) {
+            final p = _results[i];
+            double score = p['kcal'] > 0 ? (p['p'] / p['kcal']) * 100 : 0;
+            
+            // ... (Je bestaande prijs logica hier laten staan) ...
+            List prices = p['prices'] ?? [];
+            String? cheapestProteinInfo;
+            if (prices.isNotEmpty && (p['p'] ?? 0) > 0) {
+              double minPricePerGram = -1;
+              for (var pr in prices) {
+                double currentPrice = (pr['price'] ?? 0).toDouble();
+                double pricePerGram = currentPrice / p['p'];
+                if (minPricePerGram == -1 || pricePerGram < minPricePerGram) minPricePerGram = pricePerGram;
+              }
+              if (minPricePerGram > 0) cheapestProteinInfo = "€${minPricePerGram.toStringAsFixed(3)} /g eiwit";
+            }
+            // ... (Einde bestaande prijs logica) ...
+
+            return Card(
+              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15), side: BorderSide(color: Colors.grey[200]!)),
+              child: ListTile(
+                title: Text(p['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text("${p['brand']} • ${p['p']}g eiwit"),
+                    if (cheapestProteinInfo != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(cheapestProteinInfo, style: const TextStyle(color: Colors.blueGrey, fontSize: 12, fontWeight: FontWeight.w600)),
+                      ),
+                  ],
+                ),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.favorite_border, color: Colors.red),
+                      onPressed: () => _toggleFavorite(p['code']),
+                    ),
+                    const SizedBox(width: 4),
+                    Text("Score: ${score.toStringAsFixed(0)}", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+                  ],
+                ),
+                onTap: () => _showDetails(p),
+              ),
+            );
+          },
         ),
+),  
       ]),
     );
   }
@@ -642,6 +724,146 @@ class _LoginPageState extends State<LoginPage> {
             _loading ? const CircularProgressIndicator() : ElevatedButton(onPressed: () => _handleAuth(false), child: const Text("Log In")),
             TextButton(onPressed: () => _handleAuth(true), child: const Text("Maak account")),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+
+// --- NIEUW: PAGINA OM PRODUCTEN TOE TE VOEGEN ---
+class AddProductPage extends StatefulWidget {
+  final String? initialCode; // De barcode die we al gescand hebben
+
+  const AddProductPage({super.key, this.initialCode});
+
+  @override
+  State<AddProductPage> createState() => _AddProductPageState();
+}
+
+class _AddProductPageState extends State<AddProductPage> {
+  final _formKey = GlobalKey<FormState>();
+  final _codeController = TextEditingController();
+  final _nameController = TextEditingController();
+  final _brandController = TextEditingController();
+  final _pController = TextEditingController();
+  final _kcalController = TextEditingController();
+  bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.initialCode != null) {
+      _codeController.text = widget.initialCode!;
+    }
+  }
+
+  Future<void> _saveProduct() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _loading = true);
+    try {
+      final supabase = Supabase.instance.client;
+      
+      // Data voorbereiden
+      final productData = {
+        'code': _codeController.text.trim(),
+        'name': _nameController.text.trim(),
+        'brand': _brandController.text.trim(),
+        'p': double.parse(_pController.text.replaceAll(',', '.')),
+        'kcal': double.parse(_kcalController.text.replaceAll(',', '.')),
+        'c': 0, // Optioneel: later toevoegen
+        'f': 0, // Optioneel: later toevoegen
+      };
+
+      // Opslaan in Supabase
+      await supabase.from('products').insert(productData);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Product succesvol toegevoegd!")));
+        Navigator.pop(context, true); // True betekent: we hebben iets toegevoegd
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Fout: $e. Bestaat deze code al?"), backgroundColor: Colors.red));
+      }
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Nieuw Product 🆕")),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text("Help de community en voeg een ontbrekende eiwit-topper toe!", style: TextStyle(fontSize: 16, color: Colors.grey)),
+              const SizedBox(height: 20),
+              
+              // Barcode (Alleen-lezen als hij gescand is, anders aanpasbaar)
+              TextFormField(
+                controller: _codeController,
+                decoration: const InputDecoration(labelText: "Barcode", border: OutlineInputBorder(), prefixIcon: Icon(Icons.qr_code)),
+                validator: (v) => v == null || v.isEmpty ? "Barcode is verplicht" : null,
+              ),
+              const SizedBox(height: 15),
+
+              // Naam en Merk
+              TextFormField(
+                controller: _nameController,
+                decoration: const InputDecoration(labelText: "Productnaam (bijv. Skyr Vanille)", border: OutlineInputBorder(), prefixIcon: Icon(Icons.label)),
+                validator: (v) => v == null || v.isEmpty ? "Naam is verplicht" : null,
+              ),
+              const SizedBox(height: 15),
+              TextFormField(
+                controller: _brandController,
+                decoration: const InputDecoration(labelText: "Merk (bijv. Melkunie)", border: OutlineInputBorder(), prefixIcon: Icon(Icons.branding_watermark)),
+              ),
+              const SizedBox(height: 25),
+              
+              const Text("Voedingswaarden (per 100g)", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+              const SizedBox(height: 15),
+              
+              Row(
+                children: [
+                  Expanded(
+                    child: TextFormField(
+                      controller: _pController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(labelText: "Eiwit (g)", border: OutlineInputBorder(), suffixText: "g"),
+                      validator: (v) => v == null || v.isEmpty ? "Verplicht" : null,
+                    ),
+                  ),
+                  const SizedBox(width: 15),
+                  Expanded(
+                    child: TextFormField(
+                      controller: _kcalController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(labelText: "Calorieën", border: OutlineInputBorder(), suffixText: "kcal"),
+                      validator: (v) => v == null || v.isEmpty ? "Verplicht" : null,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 30),
+
+              SizedBox(
+                height: 50,
+                child: ElevatedButton.icon(
+                  onPressed: _loading ? null : _saveProduct,
+                  icon: _loading ? const SizedBox() : const Icon(Icons.save),
+                  label: _loading ? const CircularProgressIndicator() : const Text("Opslaan in Database", style: TextStyle(fontSize: 18)),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+                ),
+              )
+            ],
+          ),
         ),
       ),
     );
