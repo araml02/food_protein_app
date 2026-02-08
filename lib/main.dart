@@ -258,11 +258,19 @@ class _SearchPageState extends State<SearchPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Eiwit Bijbel ☁️"),
-        actions: [
-          IconButton(icon: const Icon(Icons.logout), onPressed: () => Supabase.instance.client.auth.signOut())
-        ],
-      ),
+          title: const Text("Eiwit Bijbel ☁️"),
+          actions: [
+            // NIEUWE PROFIEL KNOP
+            IconButton(
+              icon: const Icon(Icons.person_outline),
+              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (c) => const ProfilePage())),
+            ),
+            IconButton(
+              icon: const Icon(Icons.logout), 
+              onPressed: () => Supabase.instance.client.auth.signOut()
+            )
+          ],
+        ),
       body: Column(children: [
         Padding(
           padding: const EdgeInsets.all(12),
@@ -420,26 +428,23 @@ class _CommunityPageState extends State<CommunityPage> {
     _searchUsers();
   }
 
-  void _searchUsers() async {
-    setState(() => _loading = true);
-    try {
-      final currentUserId = _supabase.auth.currentUser!.id;
-      
-      // Zoek profielen (behalve jezelf)
-      var query = _supabase.from('profiles').select().neq('id', currentUserId);
-      
-      if (_userSearchController.text.isNotEmpty) {
-        query = query.ilike('email', '%${_userSearchController.text}%');
-      }
-
-      final res = await query.limit(20);
-      setState(() => _users = res);
-    } catch (e) {
-      debugPrint("Community fout: $e");
-    } finally {
-      setState(() => _loading = false);
+ void _searchUsers() async {
+  setState(() => _loading = true);
+  try {
+    final currentUserId = _supabase.auth.currentUser!.id;
+    // We halen nu ook 'username' op
+    var query = _supabase.from('profiles').select().neq('id', currentUserId);
+    
+    if (_userSearchController.text.isNotEmpty) {
+      // Zoek nu op username OF email
+      query = query.or('username.ilike.%${_userSearchController.text}%,email.ilike.%${_userSearchController.text}%');
     }
-  }
+
+    final res = await query.limit(20);
+    setState(() => _users = res);
+  } catch (e) { debugPrint("Fout: $e"); }
+  finally { setState(() => _loading = false); }
+}
 
   void _viewUserFavorites(Map<String, dynamic> userProfile) {
     Navigator.push(
@@ -476,11 +481,16 @@ class _CommunityPageState extends State<CommunityPage> {
                     return Card(
                       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                       child: ListTile(
-                        leading: CircleAvatar(child: Text(user['email'][0].toUpperCase())),
-                        title: Text(user['email']),
+                        leading: CircleAvatar(
+                          backgroundColor: Colors.green[100],
+                          child: Text((user['username'] ?? user['email'])[0].toUpperCase()),
+                        ),
+                        // TOON USERNAME INDIEN BESCHIKBAAR, ANDERS EMAIL
+                        title: Text(user['username'] ?? user['email'].split('@')[0]), 
+                        subtitle: Text(user['username'] != null ? "Eiwit-fanaat" : "Nog geen username"),
                         trailing: const Icon(Icons.arrow_forward_ios, size: 16),
                         onTap: () => _viewUserFavorites(user),
-                      ),
+                      ) ,
                     );
                   },
                 ),
@@ -688,23 +698,16 @@ class _LoginPageState extends State<LoginPage> {
   final _passwordController = TextEditingController();
   bool _loading = false;
 
-  Future<void> _handleAuth(bool isSignUp) async {
+  Future<void> _signIn() async {
     setState(() => _loading = true);
     try {
-      if (isSignUp) {
-        await Supabase.instance.client.auth.signUp(
-          email: _emailController.text.trim(),
-          password: _passwordController.text.trim(),
-        );
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Account gemaakt!")));
-      } else {
-        await Supabase.instance.client.auth.signInWithPassword(
-          email: _emailController.text.trim(),
-          password: _passwordController.text.trim(),
-        );
-      }
+      await Supabase.instance.client.auth.signInWithPassword(
+        email: _emailController.text.trim(),
+        password: _passwordController.text.trim(),
+      );
+      // De StreamBuilder in main.dart regelt de rest
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Fout: $e")));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Fout: $e"), backgroundColor: Colors.red));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -713,16 +716,47 @@ class _LoginPageState extends State<LoginPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Inloggen")),
       body: Padding(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(25),
         child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TextField(controller: _emailController, decoration: const InputDecoration(labelText: "Email")),
-            TextField(controller: _passwordController, decoration: const InputDecoration(labelText: "Wachtwoord"), obscureText: true),
+            const Icon(Icons.fitness_center, size: 80, color: Colors.green),
             const SizedBox(height: 20),
-            _loading ? const CircularProgressIndicator() : ElevatedButton(onPressed: () => _handleAuth(false), child: const Text("Log In")),
-            TextButton(onPressed: () => _handleAuth(true), child: const Text("Maak account")),
+            const Text("Eiwit Bijbel", textAlign: TextAlign.center, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 40),
+            
+            TextField(controller: _emailController, decoration: const InputDecoration(labelText: "Email", border: OutlineInputBorder(), prefixIcon: Icon(Icons.email))),
+            const SizedBox(height: 15),
+            TextField(controller: _passwordController, decoration: const InputDecoration(labelText: "Wachtwoord", border: OutlineInputBorder(), prefixIcon: Icon(Icons.lock)), obscureText: true),
+            
+            const SizedBox(height: 25),
+            
+            _loading 
+              ? const Center(child: CircularProgressIndicator())
+              : ElevatedButton(
+                  onPressed: _signIn,
+                  style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 15), backgroundColor: Colors.green, foregroundColor: Colors.white),
+                  child: const Text("Log In", style: TextStyle(fontSize: 16)),
+                ),
+                
+            const SizedBox(height: 20),
+            
+            // HIER IS DE AANPASSING:
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Text("Nog geen account?"),
+                TextButton(
+                  onPressed: () {
+                    // Ga naar het nieuwe registratie scherm
+                    Navigator.push(context, MaterialPageRoute(builder: (context) => const SignUpPage()));
+                  },
+                  child: const Text("Maak er hier een!"),
+                )
+              ],
+            )
           ],
         ),
       ),
@@ -862,6 +896,187 @@ class _AddProductPageState extends State<AddProductPage> {
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
                 ),
               )
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class ProfilePage extends StatefulWidget {
+  const ProfilePage({super.key});
+  @override
+  State<ProfilePage> createState() => _ProfilePageState();
+}
+
+class _ProfilePageState extends State<ProfilePage> {
+  final _supabase = Supabase.instance.client;
+  final _usernameController = TextEditingController();
+  bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProfile();
+  }
+
+  Future<void> _loadProfile() async {
+    final user = _supabase.auth.currentUser;
+    if (user == null) return;
+    
+    final data = await _supabase.from('profiles').select().eq('id', user.id).single();
+    setState(() {
+      _usernameController.text = data['username'] ?? "";
+    });
+  }
+
+  Future<void> _saveProfile() async {
+    setState(() => _loading = true);
+    try {
+      final user = _supabase.auth.currentUser;
+      await _supabase.from('profiles').update({
+        'username': _usernameController.text.trim(),
+      }).eq('id', user!.id);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Profiel bijgewerkt!")));
+        Navigator.pop(context);
+      }
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Fout: Gebruikersnaam mogelijk al bezet.")));
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Mijn Profiel 👤")),
+      body: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          children: [
+            const Text("Kies een publieke gebruikersnaam. Andere gebruikers zien deze naam in plaats van je email."),
+            const SizedBox(height: 20),
+            TextField(
+              controller: _usernameController,
+              decoration: const InputDecoration(labelText: "Gebruikersnaam", border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 20),
+            _loading 
+              ? const CircularProgressIndicator() 
+              : ElevatedButton(onPressed: _saveProfile, child: const Text("Opslaan")),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class SignUpPage extends StatefulWidget {
+  const SignUpPage({super.key});
+
+  @override
+  State<SignUpPage> createState() => _SignUpPageState();
+}
+
+class _SignUpPageState extends State<SignUpPage> {
+  final _supabase = Supabase.instance.client;
+  final _formKey = GlobalKey<FormState>();
+  
+  final _usernameController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  
+  bool _loading = false;
+
+  Future<void> _signUp() async {
+    if (!_formKey.currentState!.validate()) return;
+    
+    setState(() => _loading = true);
+    try {
+      // 1. Maak de gebruiker aan in Supabase Auth
+      final authRes = await _supabase.auth.signUp(
+        email: _emailController.text.trim(),
+        password: _passwordController.text.trim(),
+      );
+
+      // Als de registratie is gelukt, hebben we nu een User ID
+      if (authRes.user != null) {
+        // 2. Update het profiel met de gebruikersnaam
+        // (De trigger in de database heeft de rij al gemaakt, wij vullen nu de naam in)
+        await _supabase.from('profiles').update({
+          'username': _usernameController.text.trim(),
+        }).eq('id', authRes.user!.id);
+
+        if (mounted) {
+          Navigator.pop(context); // Ga terug naar het inlogscherm (of direct door)
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Account aangemaakt! Je bent nu ingelogd.")),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Fout: $e"), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Maak account")),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            children: [
+              const Text("Kies een unieke naam en start je eiwit-reis!", 
+                textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)),
+              const SizedBox(height: 20),
+              
+              // Gebruikersnaam
+              TextFormField(
+                controller: _usernameController,
+                decoration: const InputDecoration(labelText: "Gebruikersnaam", border: OutlineInputBorder(), prefixIcon: Icon(Icons.person)),
+                validator: (v) => v == null || v.length < 3 ? "Minimaal 3 tekens" : null,
+              ),
+              const SizedBox(height: 15),
+
+              // Email
+              TextFormField(
+                controller: _emailController,
+                decoration: const InputDecoration(labelText: "Email", border: OutlineInputBorder(), prefixIcon: Icon(Icons.email)),
+                validator: (v) => v == null || !v.contains('@') ? "Geldig emailadres vereist" : null,
+              ),
+              const SizedBox(height: 15),
+
+              // Wachtwoord
+              TextFormField(
+                controller: _passwordController,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: "Wachtwoord", border: OutlineInputBorder(), prefixIcon: Icon(Icons.lock)),
+                validator: (v) => v == null || v.length < 6 ? "Minimaal 6 tekens" : null,
+              ),
+              const SizedBox(height: 25),
+
+              SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: ElevatedButton(
+                  onPressed: _loading ? null : _signUp,
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+                  child: _loading ? const CircularProgressIndicator(color: Colors.white) : const Text("Registreer nu"),
+                ),
+              ),
             ],
           ),
         ),
