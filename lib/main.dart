@@ -251,8 +251,8 @@ class _SearchPageState extends State<SearchPage> {
             Text(prod['brand'] ?? '', style: TextStyle(color: Colors.grey[600])),
             const SizedBox(height: 20),
             Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
-              _stat("${prod['p']}g", "Protein", Colors.green),
-              _stat("${prod['kcal'].toInt()}", "Kcal", Colors.blue),
+              _stat("${(prod['p'] as num).toStringAsFixed(1)}g", "Protein", Colors.green),
+              _stat("${(prod['kcal'] as num).toStringAsFixed(1)}", "Kcal", Colors.blue),
             ]),
             const Divider(),
             ...prices.map((pr) => ListTile(title: Text(pr['store_name']), trailing: Text("€${pr['price']}"))),
@@ -393,7 +393,7 @@ Expanded(
                 subtitle: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text("${p['brand']} • ${p['p']}g protein"),
+                    Text("${p['brand']} • ${(p['p'] as num).toStringAsFixed(1)}g protein"),
                     if (cheapestProteinInfo != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
@@ -622,8 +622,8 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
-                _stat("Protein", "${prod['p']}g", Colors.green),
-                _stat("Kcal", "${prod['kcal'].toInt()}", Colors.blue),
+                _stat("Protein", "${(prod['p'] as num).toStringAsFixed(1)}g", Colors.green),
+                _stat("Kcal", "${(prod['kcal'] as num).toStringAsFixed(1)}", Colors.blue),
                 _stat("Ratio", (prod['p'] / prod['kcal'] * 100).toStringAsFixed(1), Colors.purple),
               ],
             ),
@@ -690,7 +690,7 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
                     subtitle: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text("${p['brand']} • ${p['p']}g protein"),
+                        Text("${p['brand']} • ${(p['p'] as num).toStringAsFixed(1)}g protein"),
                         if (cheapestInfo != null) Text(cheapestInfo, style: const TextStyle(color: Colors.blueGrey, fontSize: 12))
                       ],
                     ),
