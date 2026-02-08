@@ -84,6 +84,7 @@ class _SearchPageState extends State<SearchPage> {
   bool _showOnlyFavorites = false; 
   String _sortBy = 'efficiency';
   final TextEditingController _searchController = TextEditingController();
+  Set<String> _favoritedProductCodes = {};
 
   @override
   void initState() {
@@ -97,9 +98,11 @@ class _SearchPageState extends State<SearchPage> {
 
     try {
       await _supabase.from('favorites').insert({'user_id': user.id, 'product_code': productCode});
+      setState(() => _favoritedProductCodes.add(productCode));
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Added to favorites!")));
     } catch (e) {
       await _supabase.from('favorites').delete().match({'user_id': user.id, 'product_code': productCode});
+      setState(() => _favoritedProductCodes.remove(productCode));
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Removed from favorites")));
       if (_showOnlyFavorites) _runSearch();
     }
@@ -163,6 +166,17 @@ class _SearchPageState extends State<SearchPage> {
       }
 
       final res = await query.limit(50);
+      
+      // Fetch user's favorites to mark them in the UI
+      if (user != null) {
+        final favRes = await _supabase
+            .from('favorites')
+            .select('product_code')
+            .eq('user_id', user.id);
+        _favoritedProductCodes = (favRes as List)
+            .map((e) => e['product_code'] as String)
+            .toSet();
+      }
       
       setState(() {
         if (_showOnlyFavorites) {
@@ -391,7 +405,12 @@ Expanded(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     IconButton(
-                      icon: const Icon(Icons.favorite_border, color: Colors.red),
+                      icon: Icon(
+                        _favoritedProductCodes.contains(p['code'])
+                            ? Icons.favorite
+                            : Icons.favorite_border,
+                        color: Colors.red,
+                      ),
                       onPressed: () => _toggleFavorite(p['code']),
                     ),
                     const SizedBox(width: 4),
