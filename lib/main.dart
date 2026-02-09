@@ -45,9 +45,10 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
   
-  // The two main pages
+  // The three main pages
   final List<Widget> _pages = [
     const SearchPage(),
+    const DiscoverPage(),
     const CommunityPage(),
   ];
 
@@ -63,6 +64,7 @@ class _MainScreenState extends State<MainScreen> {
         onDestinationSelected: (idx) => setState(() => _currentIndex = idx),
         destinations: const [
           NavigationDestination(icon: Icon(Icons.fitness_center), label: 'Products'),
+          NavigationDestination(icon: Icon(Icons.explore), label: 'Discover'),
           NavigationDestination(icon: Icon(Icons.group), label: 'Community'),
         ],
       ),
@@ -108,6 +110,26 @@ class _SearchPageState extends State<SearchPage> {
     }
   }
 
+  Future<void> _votePrice(int priceId, int voteValue) async {
+    try {
+      await _supabase.from('price_votes').upsert({
+        'price_id': priceId,
+        'user_id': _supabase.auth.currentUser!.id,
+        'vote': voteValue,
+      });
+      // Refresh to show new vote count
+      _runSearch(); 
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Vote saved!"))
+      );
+    } catch (e) {
+      debugPrint("Vote error: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Could not save vote."))
+      );
+    }
+  }
+
   void _openScanner() {
     showModalBottomSheet(
       context: context,
@@ -130,19 +152,31 @@ class _SearchPageState extends State<SearchPage> {
     );
   }
 
-  void _runSearch() async {
+void _runSearch() async {
     setState(() => _loading = true);
     try {
       final user = _supabase.auth.currentUser;
       dynamic query;
+      String searchText = _searchController.text.trim();
+      
+      // TRUC: Als we op prijs filteren, gebruiken we '!inner'.
+      // Dit dwingt Supabase om ALLEEN producten terug te geven die ook echt een prijs hebben.
+      // Hierdoor verspillen we de limiet van 500 niet aan producten zonder prijs.
+      String priceSelect = (_sortBy == 'price' && searchText.isEmpty) 
+          ? 'prices!inner(*, price_votes(vote))'  // !inner = Alleen als er prijzen zijn
+          : 'prices(*, price_votes(vote))';       // Normaal = Alles mag
 
+      // 1. SELECT QUERY BOUWEN
       if (_showOnlyFavorites && user != null) {
-        query = _supabase.from('favorites').select('products (*, prices(*))').eq('user_id', user.id);
+        query = _supabase
+            .from('favorites')
+            .select('products (*, $priceSelect)') 
+            .eq('user_id', user.id);
       } else {
-        query = _supabase.from('products').select('*, prices(*)');
+        query = _supabase.from('products').select('*, $priceSelect');
       }
 
-      String searchText = _searchController.text.trim();
+      // 2. ZOEK FILTERS
       if (searchText.isNotEmpty) {
         bool isBarcode = RegExp(r'^[0-9]+$').hasMatch(searchText);
         String codeCol = _showOnlyFavorites ? 'products.code' : 'code';
@@ -159,45 +193,71 @@ class _SearchPageState extends State<SearchPage> {
         }
       }
 
-      if (!_showOnlyFavorites) {
+      // 3. SERVER-SIDE SORTERING (Voor niet-prijs filters)
+      if (!_showOnlyFavorites && _sortBy != 'price') {
         if (_sortBy == 'protein') query = query.order('p', ascending: false);
         else if (_sortBy == 'name') query = query.order('name', ascending: true);
         else query = query.order('p', ascending: false);
       }
 
-      final res = await query.limit(50);
+      // 4. DATA OPHALEN
+      // Als we op prijs sorteren, halen we meer op (500), anders is 50 genoeg
+      final limit = (_sortBy == 'price' && searchText.isEmpty) ? 500 : 50;
+      final res = await query.limit(limit);
       
-      // Fetch user's favorites to mark them in the UI
+      // Favorieten ophalen voor de hartjes
       if (user != null) {
-        final favRes = await _supabase
-            .from('favorites')
-            .select('product_code')
-            .eq('user_id', user.id);
-        _favoritedProductCodes = (favRes as List)
-            .map((e) => e['product_code'] as String)
-            .toSet();
+        final favRes = await _supabase.from('favorites').select('product_code').eq('user_id', user.id);
+        _favoritedProductCodes = (favRes as List).map((e) => e['product_code'] as String).toSet();
       }
       
       setState(() {
+        // 5. DATA UITPAKKEN
         if (_showOnlyFavorites) {
           _results = (res as List).map((e) => e['products']).where((e) => e != null).toList();
         } else {
           _results = res;
         }
         
+        // 6. LOKALE SORTERING
         if (_sortBy == 'efficiency' || _showOnlyFavorites) {
           _results.sort((a, b) {
              double ratioA = (a['kcal'] ?? 0) > 0 ? (a['p'] ?? 0) / a['kcal'] : 0;
              double ratioB = (b['kcal'] ?? 0) > 0 ? (b['p'] ?? 0) / b['kcal'] : 0;
              return ratioB.compareTo(ratioA);
           });
+        } else if (_sortBy == 'protein') {
+          _results.sort((a, b) => (b['p'] ?? 0).compareTo(a['p'] ?? 0));
+        } else if (_sortBy == 'price') {
+          // Als we hier zijn, hebben we dankzij !inner alleen producten MET prijzen
+          // We hoeven dus alleen nog maar te sorteren
+          _results.sort((a, b) {
+            double minA = _getMinPricePerGram(a);
+            double minB = _getMinPricePerGram(b);
+            return minA.compareTo(minB);
+          });
         }
       });
     } catch (e) {
-      debugPrint("Error: $e");
+      debugPrint("Search error: $e");
     } finally {
       setState(() => _loading = false);
     }
+  }
+
+  // Hulpfunctie (deze moet je ook in je class hebben staan)
+  double _getMinPricePerGram(Map product) {
+    double min = double.infinity;
+    List prices = product['prices'] ?? [];
+    double protein = (product['p'] ?? 0).toDouble();
+    if (protein <= 0) return double.infinity;
+
+    for (var pr in prices) {
+      double price = (pr['price'] ?? 0).toDouble();
+      double pricePerGram = price / protein;
+      if (pricePerGram < min) min = pricePerGram;
+    }
+    return min;
   }
 
   Future<void> _submitPrice(String code, double price, String store) async {
@@ -239,24 +299,111 @@ class _SearchPageState extends State<SearchPage> {
 
   void _showDetails(Map<String, dynamic> prod) {
     List prices = prod['prices'] ?? [];
+    final num kcal = (prod['kcal'] ?? 0) as num;
+    final num protein = (prod['p'] ?? 0) as num;
+    final String ratio = kcal > 0 ? ((protein / kcal) * 100).toStringAsFixed(1) : '0.0';
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+      ),
       builder: (ctx) => Padding(
         padding: const EdgeInsets.all(25),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(prod['name'], style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-            Text(prod['brand'] ?? '', style: TextStyle(color: Colors.grey[600])),
+            Text(
+              prod['name'],
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center,
+            ),
+            Text(prod['brand'] ?? 'Unknown brand', style: TextStyle(fontSize: 16, color: Colors.grey[600])),
             const SizedBox(height: 20),
-            Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
-              _stat("${(prod['p'] as num).toStringAsFixed(1)}g", "Protein", Colors.green),
-              _stat("${(prod['kcal'] as num).toStringAsFixed(1)}", "Kcal", Colors.blue),
-            ]),
-            const Divider(),
-            ...prices.map((pr) => ListTile(title: Text(pr['store_name']), trailing: Text("€${pr['price']}"))),
-            ElevatedButton(onPressed: () => _showPriceDialog(prod['code']), child: const Text("Add Price")),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _stat("${protein.toStringAsFixed(1)}g", "Protein", Colors.green),
+                _stat("${kcal.toStringAsFixed(1)}", "Kcal", Colors.blue),
+                _stat(ratio, "Ratio", Colors.purple),
+              ],
+            ),
+            const Divider(height: 40),
+            const Text("User Prices & Votes", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const SizedBox(height: 10),
+            if (prices.isEmpty)
+              const Padding(padding: EdgeInsets.all(20), child: Text("No prices reported yet.")),
+            ...prices.map((pr) {
+              // BEREKEN DE STEMMEN HANDMATIG UIT DE LIJST
+              List votesList = pr['price_votes'] ?? [];
+              int totalVotes = 0;
+              for (var v in votesList) {
+                totalVotes += (v['vote'] as int);
+              }
+
+              return Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: ListTile(
+                  leading: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.grey[300]!),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        GestureDetector(
+                          onTap: () => _votePrice(pr['id'], 1),
+                          child: const Icon(Icons.arrow_upward, color: Colors.green, size: 22),
+                        ),
+                        const SizedBox(width: 10),
+                        Text(
+                          "$totalVotes", 
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold, 
+                            fontSize: 16,
+                            color: totalVotes > 0 ? Colors.green : (totalVotes < 0 ? Colors.red : Colors.black)
+                          )
+                        ),
+                        const SizedBox(width: 10),
+                        GestureDetector(
+                          onTap: () => _votePrice(pr['id'], -1),
+                          child: const Icon(Icons.arrow_downward, color: Colors.red, size: 22),
+                        ),
+                      ],
+                    ),
+                  ),
+                  title: Text(pr['store_name'], style: const TextStyle(fontWeight: FontWeight.w500)),
+                  trailing: Text(
+                    "€${pr['price'].toStringAsFixed(2)}", 
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)
+                  ),
+                ),
+              );
+            }),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              height: 50,
+              child: ElevatedButton.icon(
+                onPressed: () => _showPriceDialog(prod['code']),
+                icon: const Icon(Icons.add_shopping_cart),
+                label: const Text("Add Price"),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
           ],
         ),
       ),
@@ -268,21 +415,57 @@ class _SearchPageState extends State<SearchPage> {
     Text(lab)
   ]);
 
+  Widget _buildScoreCircle(double score) {
+    Color scoreColor;
+    if (score < 5) {
+      scoreColor = Colors.red;
+    } else if (score < 15) {
+      scoreColor = Colors.orange;
+    } else {
+      scoreColor = Colors.green;
+    }
+    
+    double progress = (score / 25).clamp(0, 1);
+    
+    return SizedBox(
+      width: 60,
+      height: 60,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          CircularProgressIndicator(
+            value: progress,
+            strokeWidth: 3,
+            valueColor: AlwaysStoppedAnimation<Color>(scoreColor),
+            backgroundColor: Colors.grey[200],
+          ),
+          Text(
+            score.toStringAsFixed(0),
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 18,
+              color: scoreColor,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-          title: const Text("Protein Bible ☁️"),
+          title: const Text("GainSaver"),
           actions: [
-            // NEW PROFILE BUTTON
             IconButton(
               icon: const Icon(Icons.person_outline),
               onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (c) => const ProfilePage())),
             ),
             IconButton(
-              icon: const Icon(Icons.logout), 
-              onPressed: () => Supabase.instance.client.auth.signOut()
-            )
+              icon: const Icon(Icons.refresh),
+              onPressed: _runSearch,
+            ),
           ],
         ),
       body: Column(children: [
@@ -313,6 +496,8 @@ class _SearchPageState extends State<SearchPage> {
             ChoiceChip(label: const Text("Ratio"), selected: _sortBy == 'efficiency', onSelected: (s) { if(s) setState(() {_sortBy='efficiency'; _runSearch();}); }),
             const SizedBox(width: 8),
             ChoiceChip(label: const Text("Protein"), selected: _sortBy == 'protein', onSelected: (s) { if(s) setState(() {_sortBy='protein'; _runSearch();}); }),
+            const SizedBox(width: 8),
+            ChoiceChip(label: const Text("Price/g"), selected: _sortBy == 'price', onSelected: (s) { if(s) setState(() {_sortBy='price'; _runSearch();}); }),
           ]),
         ),
         // Replace your current Expanded(...) with this block:
@@ -370,19 +555,31 @@ Expanded(
             final p = _results[i];
             double score = p['kcal'] > 0 ? (p['p'] / p['kcal']) * 100 : 0;
             
-            // ... (Your existing price logic here) ...
+            // Calculate most voted price info
             List prices = p['prices'] ?? [];
-            String? cheapestProteinInfo;
+            String? mostVotedPriceInfo;
             if (prices.isNotEmpty && (p['p'] ?? 0) > 0) {
-              double minPricePerGram = -1;
+              int maxVotes = -999999;
+              double? bestPrice;
+              
               for (var pr in prices) {
-                double currentPrice = (pr['price'] ?? 0).toDouble();
-                double pricePerGram = currentPrice / p['p'];
-                if (minPricePerGram == -1 || pricePerGram < minPricePerGram) minPricePerGram = pricePerGram;
+                List votesList = pr['price_votes'] ?? [];
+                int totalVotes = 0;
+                for (var v in votesList) {
+                  totalVotes += (v['vote'] as int);
+                }
+                
+                if (totalVotes > maxVotes) {
+                  maxVotes = totalVotes;
+                  bestPrice = (pr['price'] ?? 0).toDouble();
+                }
               }
-              if (minPricePerGram > 0) cheapestProteinInfo = "€${minPricePerGram.toStringAsFixed(3)} /g protein";
+              
+              if (bestPrice != null && bestPrice > 0) {
+                double pricePerGram = bestPrice / p['p'];
+                mostVotedPriceInfo = "€${pricePerGram.toStringAsFixed(3)} /g protein";
+              }
             }
-            // ... (End of existing price logic) ...
 
             return Card(
               margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -394,27 +591,33 @@ Expanded(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text("${p['brand']} • ${(p['p'] as num).toStringAsFixed(1)}g protein"),
-                    if (cheapestProteinInfo != null)
+                    if (mostVotedPriceInfo != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
-                        child: Text(cheapestProteinInfo, style: const TextStyle(color: Colors.blueGrey, fontSize: 12, fontWeight: FontWeight.w600)),
+                        child: Text(mostVotedPriceInfo, style: const TextStyle(color: Colors.blueGrey, fontSize: 12, fontWeight: FontWeight.w600)),
                       ),
                   ],
                 ),
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    IconButton(
-                      icon: Icon(
-                        _favoritedProductCodes.contains(p['code'])
-                            ? Icons.favorite
-                            : Icons.favorite_border,
-                        color: Colors.red,
+                    SizedBox(
+                      width: 36,
+                      height: 36,
+                      child: IconButton(
+                        padding: EdgeInsets.zero,
+                        icon: Icon(
+                          _favoritedProductCodes.contains(p['code'])
+                              ? Icons.favorite
+                              : Icons.favorite_border,
+                          color: Colors.red,
+                          size: 20,
+                        ),
+                        onPressed: () => _toggleFavorite(p['code']),
                       ),
-                      onPressed: () => _toggleFavorite(p['code']),
                     ),
-                    const SizedBox(width: 4),
-                    Text("Score: ${score.toStringAsFixed(0)}", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+                    const SizedBox(width: 3),
+                    _buildScoreCircle(score),
                   ],
                 ),
                 onTap: () => _showDetails(p),
@@ -428,7 +631,308 @@ Expanded(
   }
 }
 
-// --- TAB 2: COMMUNITY (NEW!) ---
+// --- TAB 2: DISCOVER (MOST FAVORITED) ---
+class DiscoverPage extends StatefulWidget {
+  const DiscoverPage({super.key});
+  @override
+  State<DiscoverPage> createState() => _DiscoverPageState();
+}
+
+class _DiscoverPageState extends State<DiscoverPage> {
+  final _supabase = Supabase.instance.client;
+  List<dynamic> _popularProducts = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPopularProducts();
+  }
+
+  void _loadPopularProducts() async {
+    setState(() => _loading = true);
+    try {
+      // Get all favorites with product data
+      final favoritesData = await _supabase
+          .from('favorites')
+          .select('product_code, products (*, prices(*, price_votes(vote)))');
+
+      // Count favorites per product
+      final Map<String, dynamic> productCounts = {};
+      for (var fav in (favoritesData as List)) {
+        final code = fav['product_code'];
+        final product = fav['products'];
+        if (product != null) {
+          if (productCounts.containsKey(code)) {
+            productCounts[code]['count']++;
+          } else {
+            productCounts[code] = {
+              'count': 1,
+              'product': product,
+            };
+          }
+        }
+      }
+
+      // Convert to list and sort by count
+      final List<Map<String, dynamic>> sorted = productCounts.values
+          .map((item) => {
+                'product': item['product'],
+                'favorite_count': item['count'],
+              })
+          .toList();
+
+      sorted.sort((a, b) => (b['favorite_count'] as int).compareTo(a['favorite_count'] as int));
+
+      setState(() => _popularProducts = sorted);
+    } catch (e) {
+      debugPrint("Discover error: $e");
+    } finally {
+      setState(() => _loading = false);
+    }
+  }
+
+  void _showDetails(Map<String, dynamic> prod) {
+    List prices = prod['prices'] ?? [];
+    final num kcal = (prod['kcal'] ?? 0) as num;
+    final num protein = (prod['p'] ?? 0) as num;
+    final String ratio = kcal > 0 ? ((protein / kcal) * 100).toStringAsFixed(1) : '0.0';
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+      ),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(25),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              prod['name'],
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center,
+            ),
+            Text(prod['brand'] ?? 'Unknown brand', style: TextStyle(fontSize: 16, color: Colors.grey[600])),
+            const SizedBox(height: 20),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _stat("${protein.toStringAsFixed(1)}g", "Protein", Colors.green),
+                _stat("${kcal.toStringAsFixed(1)}", "Kcal", Colors.blue),
+                _stat(ratio, "Ratio", Colors.purple),
+              ],
+            ),
+            const Divider(height: 40),
+            const Text("User Prices", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const SizedBox(height: 10),
+            if (prices.isEmpty)
+              const Padding(padding: EdgeInsets.all(20), child: Text("No prices reported yet.")),
+            ...prices.map((pr) {
+              List votesList = pr['price_votes'] ?? [];
+              int totalVotes = 0;
+              for (var v in votesList) {
+                totalVotes += (v['vote'] as int);
+              }
+              return Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: ListTile(
+                  leading: Text(
+                    "$totalVotes",
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                      color: totalVotes > 0 ? Colors.green : (totalVotes < 0 ? Colors.red : Colors.black),
+                    ),
+                  ),
+                  title: Text(pr['store_name'], style: const TextStyle(fontWeight: FontWeight.w500)),
+                  trailing: Text(
+                    "€${pr['price'].toStringAsFixed(2)}",
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                ),
+              );
+            }),
+            const SizedBox(height: 10),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _stat(String val, String lab, Color col) => Column(children: [
+        Text(val, style: TextStyle(color: col, fontSize: 20, fontWeight: FontWeight.bold)),
+        Text(lab)
+      ]);
+
+  Widget _buildScoreCircle(double score) {
+    Color scoreColor;
+    if (score < 5) {
+      scoreColor = Colors.red;
+    } else if (score < 15) {
+      scoreColor = Colors.orange;
+    } else {
+      scoreColor = Colors.green;
+    }
+
+    double progress = (score / 25).clamp(0, 1);
+
+    return SizedBox(
+      width: 60,
+      height: 60,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          CircularProgressIndicator(
+            value: progress,
+            strokeWidth: 3,
+            valueColor: AlwaysStoppedAnimation<Color>(scoreColor),
+            backgroundColor: Colors.grey[200],
+          ),
+          Text(
+            score.toStringAsFixed(0),
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 18,
+              color: scoreColor,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("Discover 🔥"),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.person_outline),
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (c) => const ProfilePage())),
+          ),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _loadPopularProducts,
+          ),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _popularProducts.isEmpty
+              ? const Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.explore_off, size: 60, color: Colors.grey),
+                      SizedBox(height: 20),
+                      Text(
+                        "No popular products yet.",
+                        style: TextStyle(fontSize: 16, color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: _popularProducts.length,
+                  itemBuilder: (context, index) {
+                    final item = _popularProducts[index];
+                    final product = item['product'];
+                    final favoriteCount = item['favorite_count'];
+                    double score = product['kcal'] > 0 ? (product['p'] / product['kcal']) * 100 : 0;
+
+                    // Calculate most voted price info
+                    List prices = product['prices'] ?? [];
+                    String? mostVotedPriceInfo;
+                    if (prices.isNotEmpty && (product['p'] ?? 0) > 0) {
+                      int maxVotes = -999999;
+                      double? bestPrice;
+                      
+                      for (var pr in prices) {
+                        List votesList = pr['price_votes'] ?? [];
+                        int totalVotes = 0;
+                        for (var v in votesList) {
+                          totalVotes += (v['vote'] as int);
+                        }
+                        
+                        if (totalVotes > maxVotes) {
+                          maxVotes = totalVotes;
+                          bestPrice = (pr['price'] ?? 0).toDouble();
+                        }
+                      }
+                      
+                      if (bestPrice != null && bestPrice > 0) {
+                        double pricePerGram = bestPrice / product['p'];
+                        mostVotedPriceInfo = "€${pricePerGram.toStringAsFixed(3)} /g protein";
+                      }
+                    }
+
+                    return Card(
+                      margin: const EdgeInsets.symmetric(vertical: 6),
+                      elevation: 2,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(15),
+                        side: BorderSide(color: Colors.orange[100]!, width: 2),
+                      ),
+                      child: ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: Colors.orange[100],
+                          child: Text(
+                            "$favoriteCount",
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.orange,
+                            ),
+                          ),
+                        ),
+                        title: Text(product['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text("${product['brand']} • ${(product['p'] as num).toStringAsFixed(1)}g protein"),
+                            if (mostVotedPriceInfo != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text(
+                                  mostVotedPriceInfo,
+                                  style: const TextStyle(
+                                    color: Colors.blueGrey,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                "❤️ $favoriteCount ${favoriteCount == 1 ? 'person' : 'people'} love${favoriteCount == 1 ? 's' : ''} this",
+                                style: TextStyle(
+                                  color: Colors.red[400],
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        trailing: _buildScoreCircle(score),
+                        onTap: () => _showDetails(product),
+                      ),
+                    );
+                  },
+                ),
+    );
+  }
+}
+
+// --- TAB 3: COMMUNITY (NEW!) ---
 class CommunityPage extends StatefulWidget {
   const CommunityPage({super.key});
   @override
@@ -460,8 +964,19 @@ class _CommunityPageState extends State<CommunityPage> {
     }
 
     final res = await query.limit(20);
-    setState(() => _users = res);
-  } catch (e) { debugPrint("Error: $e"); }
+    
+    // Voor elke gebruiker de score ophalen via een RPC call
+    List<Map<String, dynamic>> enrichedUsers = [];
+    for (var user in res) {
+      final score = await _supabase.rpc('get_contribution_score', params: {'target_user_id': user['id']});
+      enrichedUsers.add({
+        ...user,
+        'score': score,
+      });
+    }
+
+    setState(() => _users = enrichedUsers);
+  } catch (e) { debugPrint("Community error: $e"); }
   finally { setState(() => _loading = false); }
 }
 
@@ -475,7 +990,19 @@ class _CommunityPageState extends State<CommunityPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Find users 👥")),
+      appBar: AppBar(
+        title: const Text("Find users 👥"),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.person_outline),
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (c) => const ProfilePage())),
+          ),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _searchUsers,
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Padding(
@@ -506,7 +1033,7 @@ class _CommunityPageState extends State<CommunityPage> {
                         ),
                         // SHOW USERNAME IF AVAILABLE, OTHERWISE EMAIL
                         title: Text(user['username'] ?? user['email'].split('@')[0]), 
-                        subtitle: Text(user['username'] != null ? "Protein fanatic" : "No username yet"),
+                        subtitle: Text("Contribution Score: ${user['score']}"),
                         trailing: const Icon(Icons.arrow_forward_ios, size: 16),
                         onTap: () => _viewUserFavorites(user),
                       ) ,
@@ -544,9 +1071,9 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
 
   void _loadUserFavorites() async {
     try {
-      final res = await _supabase
+        final res = await _supabase
           .from('favorites')
-          .select('products (*, prices(*))') // We also fetch the prices now!
+          .select('products (*, prices(*, price_votes(vote)))')
           .eq('user_id', widget.userId);
 
       setState(() {
@@ -572,6 +1099,26 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
       if (mounted) Navigator.pop(context);
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Price saved!")));
     } catch (e) { debugPrint("Error: $e"); }
+  }
+
+  Future<void> _votePrice(int priceId, int voteValue) async {
+    try {
+      await _supabase.from('price_votes').upsert({
+        'price_id': priceId,
+        'user_id': _supabase.auth.currentUser!.id,
+        'vote': voteValue,
+      });
+      // Refresh to show new vote count
+      _loadUserFavorites(); 
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Vote saved!"))
+      );
+    } catch (e) {
+      debugPrint("Vote error: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Could not save vote."))
+      );
+    }
   }
 
   void _showPriceDialog(String code) {
@@ -607,6 +1154,10 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
 
   void _showDetails(Map<String, dynamic> prod) {
     List prices = prod['prices'] ?? [];
+    final num kcal = (prod['kcal'] ?? 0) as num;
+    final num protein = (prod['p'] ?? 0) as num;
+    final String ratio = kcal > 0 ? ((protein / kcal) * 100).toStringAsFixed(1) : '0.0';
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -618,32 +1169,90 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
           children: [
             Text(prod['name'], style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
             Text(prod['brand'] ?? 'Unknown brand', style: TextStyle(fontSize: 16, color: Colors.grey[600])),
-            const Divider(height: 30),
+            const SizedBox(height: 20),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
-                _stat("Protein", "${(prod['p'] as num).toStringAsFixed(1)}g", Colors.green),
-                _stat("Kcal", "${(prod['kcal'] as num).toStringAsFixed(1)}", Colors.blue),
-                _stat("Ratio", (prod['p'] / prod['kcal'] * 100).toStringAsFixed(1), Colors.purple),
+                _stat("Protein", "${protein.toStringAsFixed(1)}g", Colors.green),
+                _stat("Kcal", "${kcal.toStringAsFixed(1)}", Colors.blue),
+                _stat("Ratio", ratio, Colors.purple),
               ],
             ),
-            const Divider(height: 30),
-            const Text("User prices", style: TextStyle(fontWeight: FontWeight.bold)),
-            if (prices.isEmpty) const Padding(padding: EdgeInsets.all(15), child: Text("No prices known yet...")),
-            ...prices.map((pr) => ListTile(
-              leading: const Icon(Icons.store, color: Colors.green),
-              title: Text(pr['store_name']),
-              trailing: Text("€${pr['price'].toStringAsFixed(2)}", style: const TextStyle(fontWeight: FontWeight.bold)),
-            )),
+            const Divider(height: 40),
+            const Text("User Prices & Votes", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const SizedBox(height: 10),
+            if (prices.isEmpty)
+              const Padding(padding: EdgeInsets.all(20), child: Text("No prices reported yet.")),
+            ...prices.map((pr) {
+              // BEREKEN DE STEMMEN HANDMATIG UIT DE LIJST
+              List votesList = pr['price_votes'] ?? [];
+              int totalVotes = 0;
+              for (var v in votesList) {
+                totalVotes += (v['vote'] as int);
+              }
+
+              return Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: ListTile(
+                  leading: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.grey[300]!),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        GestureDetector(
+                          onTap: () => _votePrice(pr['id'], 1),
+                          child: const Icon(Icons.arrow_upward, color: Colors.green, size: 22),
+                        ),
+                        const SizedBox(width: 10),
+                        Text(
+                          "$totalVotes", 
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold, 
+                            fontSize: 16,
+                            color: totalVotes > 0 ? Colors.green : (totalVotes < 0 ? Colors.red : Colors.black)
+                          )
+                        ),
+                        const SizedBox(width: 10),
+                        GestureDetector(
+                          onTap: () => _votePrice(pr['id'], -1),
+                          child: const Icon(Icons.arrow_downward, color: Colors.red, size: 22),
+                        ),
+                      ],
+                    ),
+                  ),
+                  title: Text(pr['store_name'], style: const TextStyle(fontWeight: FontWeight.w500)),
+                  trailing: Text(
+                    "€${pr['price'].toStringAsFixed(2)}", 
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)
+                  ),
+                ),
+              );
+            }),
             const SizedBox(height: 20),
             SizedBox(
               width: double.infinity,
+              height: 50,
               child: ElevatedButton.icon(
                 onPressed: () => _showPriceDialog(prod['code']),
                 icon: const Icon(Icons.add_shopping_cart),
                 label: const Text("Add price"),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
               ),
             ),
+            const SizedBox(height: 10),
           ],
         ),
       ),
@@ -654,6 +1263,43 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
         Text(val, style: TextStyle(color: col, fontSize: 22, fontWeight: FontWeight.bold)),
         Text(lab, style: const TextStyle(fontWeight: FontWeight.w500))
       ]);
+
+  Widget _buildScoreCircle(double score) {
+    Color scoreColor;
+    if (score < 5) {
+      scoreColor = Colors.red;
+    } else if (score < 15) {
+      scoreColor = Colors.orange;
+    } else {
+      scoreColor = Colors.green;
+    }
+    
+    double progress = (score / 25).clamp(0, 1);
+    
+    return SizedBox(
+      width: 60,
+      height: 60,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          CircularProgressIndicator(
+            value: progress,
+            strokeWidth: 3,
+            valueColor: AlwaysStoppedAnimation<Color>(scoreColor),
+            backgroundColor: Colors.grey[200],
+          ),
+          Text(
+            score.toStringAsFixed(0),
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 18,
+              color: scoreColor,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -669,16 +1315,30 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
                 final p = _products[index];
                 double score = p['kcal'] > 0 ? (p['p'] / p['kcal']) * 100 : 0;
                 
-                // Calculate cheapest price (optional, for the subtitle)
+                // Calculate most voted price info
                 List prices = p['prices'] ?? [];
-                String? cheapestInfo;
-                 if (prices.isNotEmpty && (p['p'] ?? 0) > 0) {
-                  double min = -1;
+                String? mostVotedInfo;
+                if (prices.isNotEmpty && (p['p'] ?? 0) > 0) {
+                  int maxVotes = -999999;
+                  double? bestPrice;
+                  
                   for (var pr in prices) {
-                    double pp = (pr['price'] ?? 0).toDouble() / p['p'];
-                    if (min == -1 || pp < min) min = pp;
+                    List votesList = pr['price_votes'] ?? [];
+                    int totalVotes = 0;
+                    for (var v in votesList) {
+                      totalVotes += (v['vote'] as int);
+                    }
+                    
+                    if (totalVotes > maxVotes) {
+                      maxVotes = totalVotes;
+                      bestPrice = (pr['price'] ?? 0).toDouble();
+                    }
                   }
-                  if (min > 0) cheapestInfo = "€${min.toStringAsFixed(3)} /g protein";
+                  
+                  if (bestPrice != null && bestPrice > 0) {
+                    double pricePerGram = bestPrice / p['p'];
+                    mostVotedInfo = "€${pricePerGram.toStringAsFixed(3)} /g protein";
+                  }
                 }
 
                 return Card(
@@ -691,10 +1351,10 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text("${p['brand']} • ${(p['p'] as num).toStringAsFixed(1)}g protein"),
-                        if (cheapestInfo != null) Text(cheapestInfo, style: const TextStyle(color: Colors.blueGrey, fontSize: 12))
+                        if (mostVotedInfo != null) Text(mostVotedInfo, style: const TextStyle(color: Colors.blueGrey, fontSize: 12))
                       ],
                     ),
-                    trailing: Text("Score: ${score.toStringAsFixed(0)}", style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
+                    trailing: _buildScoreCircle(score),
                     
                     // THIS LINE WAS MISSING:
                     onTap: () => _showDetails(p),
@@ -743,7 +1403,7 @@ class _LoginPageState extends State<LoginPage> {
           children: [
             const Icon(Icons.fitness_center, size: 80, color: Colors.green),
             const SizedBox(height: 20),
-            const Text("Protein Bible", textAlign: TextAlign.center, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+            const Text("GainSaver", textAlign: TextAlign.center, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
             const SizedBox(height: 40),
             
             TextField(controller: _emailController, decoration: const InputDecoration(labelText: "Email", border: OutlineInputBorder(), prefixIcon: Icon(Icons.email))),
@@ -987,6 +1647,21 @@ class _ProfilePageState extends State<ProfilePage> {
             _loading 
               ? const CircularProgressIndicator() 
               : ElevatedButton(onPressed: _saveProfile, child: const Text("Save")),
+            const SizedBox(height: 40),
+            const Divider(),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              height: 50,
+              child: OutlinedButton.icon(
+                onPressed: () => Supabase.instance.client.auth.signOut(),
+                icon: const Icon(Icons.logout, color: Colors.red),
+                label: const Text("Log Out", style: TextStyle(color: Colors.red)),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Colors.red),
+                ),
+              ),
+            ),
           ],
         ),
       ),
