@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:google_generative_ai/google_generative_ai.dart'; 
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -50,6 +51,7 @@ class _MainScreenState extends State<MainScreen> {
     const SearchPage(),
     const DiscoverPage(),
     const CommunityPage(),
+    const GainsBotPage(),
   ];
 
   @override
@@ -66,6 +68,7 @@ class _MainScreenState extends State<MainScreen> {
           NavigationDestination(icon: Icon(Icons.fitness_center), label: 'Products'),
           NavigationDestination(icon: Icon(Icons.explore), label: 'Discover'),
           NavigationDestination(icon: Icon(Icons.group), label: 'Community'),
+          NavigationDestination(icon: Icon(Icons.smart_toy), label: 'AI Coach'),
         ],
       ),
     );
@@ -110,25 +113,7 @@ class _SearchPageState extends State<SearchPage> {
     }
   }
 
-  Future<void> _votePrice(int priceId, int voteValue) async {
-    try {
-      await _supabase.from('price_votes').upsert({
-        'price_id': priceId,
-        'user_id': _supabase.auth.currentUser!.id,
-        'vote': voteValue,
-      });
-      // Refresh to show new vote count
-      _runSearch(); 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Vote saved!"))
-      );
-    } catch (e) {
-      debugPrint("Vote error: $e");
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Could not save vote."))
-      );
-    }
-  }
+
 
   void _openScanner() {
     showModalBottomSheet(
@@ -163,8 +148,8 @@ void _runSearch() async {
       // Dit dwingt Supabase om ALLEEN producten terug te geven die ook echt een prijs hebben.
       // Hierdoor verspillen we de limiet van 500 niet aan producten zonder prijs.
       String priceSelect = (_sortBy == 'price' && searchText.isEmpty) 
-          ? 'prices!inner(*, price_votes(vote))'  // !inner = Alleen als er prijzen zijn
-          : 'prices(*, price_votes(vote))';       // Normaal = Alles mag
+          ? 'prices!inner(*)'  // !inner = Alleen als er prijzen zijn
+          : 'prices(*)';       // Normaal = Alles mag
 
       // 1. SELECT QUERY BOUWEN
       if (_showOnlyFavorites && user != null) {
@@ -274,7 +259,7 @@ void _runSearch() async {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text("Prijs melden"),
+        title: const Text("Add Price"),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -330,60 +315,49 @@ void _runSearch() async {
               ],
             ),
             const Divider(height: 40),
-            const Text("User Prices & Votes", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const Text("User Prices", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 10),
             if (prices.isEmpty)
               const Padding(padding: EdgeInsets.all(20), child: Text("No prices reported yet.")),
             ...prices.map((pr) {
-              // BEREKEN DE STEMMEN HANDMATIG UIT DE LIJST
-              List votesList = pr['price_votes'] ?? [];
-              int totalVotes = 0;
-              for (var v in votesList) {
-                totalVotes += (v['vote'] as int);
-              }
+              // Logic for Freshness
+              final DateTime updatedAt = DateTime.parse(pr['created_at']);
+              final int daysAgo = DateTime.now().difference(updatedAt).inDays;
+              
+              Color statusColor = daysAgo <= 7 ? Colors.green : (daysAgo <= 30 ? Colors.orange : Colors.red);
+              String statusText = daysAgo == 0 ? "Verified today" : "Verified $daysAgo days ago";
 
               return Container(
-                margin: const EdgeInsets.only(bottom: 10),
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.symmetric(vertical: 8),
                 decoration: BoxDecoration(
-                  color: Colors.grey[100],
+                  color: Colors.white,
                   borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey[200]!),
                 ),
                 child: ListTile(
-                  leading: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.grey[300]!),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        GestureDetector(
-                          onTap: () => _votePrice(pr['id'], 1),
-                          child: const Icon(Icons.arrow_upward, color: Colors.green, size: 22),
-                        ),
-                        const SizedBox(width: 10),
-                        Text(
-                          "$totalVotes", 
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold, 
-                            fontSize: 16,
-                            color: totalVotes > 0 ? Colors.green : (totalVotes < 0 ? Colors.red : Colors.black)
-                          )
-                        ),
-                        const SizedBox(width: 10),
-                        GestureDetector(
-                          onTap: () => _votePrice(pr['id'], -1),
-                          child: const Icon(Icons.arrow_downward, color: Colors.red, size: 22),
-                        ),
-                      ],
-                    ),
-                  ),
-                  title: Text(pr['store_name'], style: const TextStyle(fontWeight: FontWeight.w500)),
-                  trailing: Text(
-                    "€${pr['price'].toStringAsFixed(2)}", 
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)
+                  leading: Icon(Icons.history, color: statusColor.withOpacity(0.6)),
+                  title: Text(pr['store_name'], style: const TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: Text(statusText, style: TextStyle(color: statusColor, fontSize: 12)),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text("€${pr['price'].toStringAsFixed(2)}", 
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.check_circle, color: Colors.blue),
+                        onPressed: () async {
+                          await _supabase
+                              .from('prices')
+                              .update({'created_at': DateTime.now().toIso8601String()})
+                              .eq('id', pr['id']);
+                          _runSearch();
+                          if (mounted) Navigator.pop(context);
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Thanks for verifying!")));
+                        },
+                      ),
+                    ],
                   ),
                 ),
               );
@@ -555,29 +529,29 @@ Expanded(
             final p = _results[i];
             double score = p['kcal'] > 0 ? (p['p'] / p['kcal']) * 100 : 0;
             
-            // Calculate most voted price info
+            // Calculate freshest price info
             List prices = p['prices'] ?? [];
-            String? mostVotedPriceInfo;
+            String? freshestPriceInfo;
             if (prices.isNotEmpty && (p['p'] ?? 0) > 0) {
-              int maxVotes = -999999;
-              double? bestPrice;
+              DateTime? mostRecent;
+              double? freshestPrice;
               
               for (var pr in prices) {
-                List votesList = pr['price_votes'] ?? [];
-                int totalVotes = 0;
-                for (var v in votesList) {
-                  totalVotes += (v['vote'] as int);
-                }
-                
-                if (totalVotes > maxVotes) {
-                  maxVotes = totalVotes;
-                  bestPrice = (pr['price'] ?? 0).toDouble();
+                try {
+                  DateTime priceDate = DateTime.parse(pr['created_at']);
+                  if (mostRecent == null || priceDate.isAfter(mostRecent)) {
+                    mostRecent = priceDate;
+                    freshestPrice = (pr['price'] ?? 0).toDouble();
+                  }
+                } catch (e) {
+                  // Skip invalid dates
+                  continue;
                 }
               }
               
-              if (bestPrice != null && bestPrice > 0) {
-                double pricePerGram = bestPrice / p['p'];
-                mostVotedPriceInfo = "€${pricePerGram.toStringAsFixed(3)} /g protein";
+              if (freshestPrice != null && freshestPrice > 0) {
+                double pricePerGram = freshestPrice / p['p'];
+                freshestPriceInfo = "€${pricePerGram.toStringAsFixed(3)} /g protein";
               }
             }
 
@@ -591,10 +565,10 @@ Expanded(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text("${p['brand']} • ${(p['p'] as num).toStringAsFixed(1)}g protein"),
-                    if (mostVotedPriceInfo != null)
+                    if (freshestPriceInfo != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
-                        child: Text(mostVotedPriceInfo, style: const TextStyle(color: Colors.blueGrey, fontSize: 12, fontWeight: FontWeight.w600)),
+                        child: Text(freshestPriceInfo, style: const TextStyle(color: Colors.blueGrey, fontSize: 12, fontWeight: FontWeight.w600)),
                       ),
                   ],
                 ),
@@ -655,7 +629,7 @@ class _DiscoverPageState extends State<DiscoverPage> {
       // Get all favorites with product data
       final favoritesData = await _supabase
           .from('favorites')
-          .select('product_code, products (*, prices(*, price_votes(vote)))');
+          .select('product_code, products (*, prices(*))');
 
       // Count favorites per product
       final Map<String, dynamic> productCounts = {};
@@ -730,30 +704,44 @@ class _DiscoverPageState extends State<DiscoverPage> {
             if (prices.isEmpty)
               const Padding(padding: EdgeInsets.all(20), child: Text("No prices reported yet.")),
             ...prices.map((pr) {
-              List votesList = pr['price_votes'] ?? [];
-              int totalVotes = 0;
-              for (var v in votesList) {
-                totalVotes += (v['vote'] as int);
-              }
+              // Logic for Freshness
+              final DateTime updatedAt = DateTime.parse(pr['created_at']);
+              final int daysAgo = DateTime.now().difference(updatedAt).inDays;
+              
+              Color statusColor = daysAgo <= 7 ? Colors.green : (daysAgo <= 30 ? Colors.orange : Colors.red);
+              String statusText = daysAgo == 0 ? "Verified today" : "Verified $daysAgo days ago";
+
               return Container(
-                margin: const EdgeInsets.only(bottom: 10),
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.symmetric(vertical: 8),
                 decoration: BoxDecoration(
-                  color: Colors.grey[100],
+                  color: Colors.white,
                   borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey[200]!),
                 ),
                 child: ListTile(
-                  leading: Text(
-                    "$totalVotes",
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                      color: totalVotes > 0 ? Colors.green : (totalVotes < 0 ? Colors.red : Colors.black),
-                    ),
-                  ),
-                  title: Text(pr['store_name'], style: const TextStyle(fontWeight: FontWeight.w500)),
-                  trailing: Text(
-                    "€${pr['price'].toStringAsFixed(2)}",
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  leading: Icon(Icons.history, color: statusColor.withOpacity(0.6)),
+                  title: Text(pr['store_name'], style: const TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: Text(statusText, style: TextStyle(color: statusColor, fontSize: 12)),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text("€${pr['price'].toStringAsFixed(2)}", 
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.check_circle, color: Colors.blue),
+                        onPressed: () async {
+                          await _supabase
+                              .from('prices')
+                              .update({'created_at': DateTime.now().toIso8601String()})
+                              .eq('id', pr['id']);
+                          _loadPopularProducts();
+                          if (mounted) Navigator.pop(context);
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Thanks for verifying!")));
+                        },
+                      ),
+                    ],
                   ),
                 ),
               );
@@ -848,29 +836,29 @@ class _DiscoverPageState extends State<DiscoverPage> {
                     final favoriteCount = item['favorite_count'];
                     double score = product['kcal'] > 0 ? (product['p'] / product['kcal']) * 100 : 0;
 
-                    // Calculate most voted price info
+                    // Calculate freshest price info
                     List prices = product['prices'] ?? [];
-                    String? mostVotedPriceInfo;
+                    String? freshestPriceInfo;
                     if (prices.isNotEmpty && (product['p'] ?? 0) > 0) {
-                      int maxVotes = -999999;
-                      double? bestPrice;
+                      DateTime? mostRecent;
+                      double? freshestPrice;
                       
                       for (var pr in prices) {
-                        List votesList = pr['price_votes'] ?? [];
-                        int totalVotes = 0;
-                        for (var v in votesList) {
-                          totalVotes += (v['vote'] as int);
-                        }
-                        
-                        if (totalVotes > maxVotes) {
-                          maxVotes = totalVotes;
-                          bestPrice = (pr['price'] ?? 0).toDouble();
+                        try {
+                          DateTime priceDate = DateTime.parse(pr['created_at']);
+                          if (mostRecent == null || priceDate.isAfter(mostRecent)) {
+                            mostRecent = priceDate;
+                            freshestPrice = (pr['price'] ?? 0).toDouble();
+                          }
+                        } catch (e) {
+                          // Skip invalid dates
+                          continue;
                         }
                       }
                       
-                      if (bestPrice != null && bestPrice > 0) {
-                        double pricePerGram = bestPrice / product['p'];
-                        mostVotedPriceInfo = "€${pricePerGram.toStringAsFixed(3)} /g protein";
+                      if (freshestPrice != null && freshestPrice > 0) {
+                        double pricePerGram = freshestPrice / product['p'];
+                        freshestPriceInfo = "€${pricePerGram.toStringAsFixed(3)} /g protein";
                       }
                     }
 
@@ -897,11 +885,11 @@ class _DiscoverPageState extends State<DiscoverPage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text("${product['brand']} • ${(product['p'] as num).toStringAsFixed(1)}g protein"),
-                            if (mostVotedPriceInfo != null)
+                            if (freshestPriceInfo != null)
                               Padding(
                                 padding: const EdgeInsets.only(top: 4),
                                 child: Text(
-                                  mostVotedPriceInfo,
+                                  freshestPriceInfo,
                                   style: const TextStyle(
                                     color: Colors.blueGrey,
                                     fontSize: 12,
@@ -1073,7 +1061,7 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
     try {
         final res = await _supabase
           .from('favorites')
-          .select('products (*, prices(*, price_votes(vote)))')
+          .select('products (*, prices(*))')
           .eq('user_id', widget.userId);
 
       setState(() {
@@ -1179,60 +1167,49 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
               ],
             ),
             const Divider(height: 40),
-            const Text("User Prices & Votes", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const Text("User Prices", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 10),
             if (prices.isEmpty)
               const Padding(padding: EdgeInsets.all(20), child: Text("No prices reported yet.")),
             ...prices.map((pr) {
-              // BEREKEN DE STEMMEN HANDMATIG UIT DE LIJST
-              List votesList = pr['price_votes'] ?? [];
-              int totalVotes = 0;
-              for (var v in votesList) {
-                totalVotes += (v['vote'] as int);
-              }
+              // Logic for Freshness
+              final DateTime updatedAt = DateTime.parse(pr['created_at']);
+              final int daysAgo = DateTime.now().difference(updatedAt).inDays;
+              
+              Color statusColor = daysAgo <= 7 ? Colors.green : (daysAgo <= 30 ? Colors.orange : Colors.red);
+              String statusText = daysAgo == 0 ? "Verified today" : "Verified $daysAgo days ago";
 
               return Container(
-                margin: const EdgeInsets.only(bottom: 10),
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.symmetric(vertical: 8),
                 decoration: BoxDecoration(
-                  color: Colors.grey[100],
+                  color: Colors.white,
                   borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey[200]!),
                 ),
                 child: ListTile(
-                  leading: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.grey[300]!),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        GestureDetector(
-                          onTap: () => _votePrice(pr['id'], 1),
-                          child: const Icon(Icons.arrow_upward, color: Colors.green, size: 22),
-                        ),
-                        const SizedBox(width: 10),
-                        Text(
-                          "$totalVotes", 
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold, 
-                            fontSize: 16,
-                            color: totalVotes > 0 ? Colors.green : (totalVotes < 0 ? Colors.red : Colors.black)
-                          )
-                        ),
-                        const SizedBox(width: 10),
-                        GestureDetector(
-                          onTap: () => _votePrice(pr['id'], -1),
-                          child: const Icon(Icons.arrow_downward, color: Colors.red, size: 22),
-                        ),
-                      ],
-                    ),
-                  ),
-                  title: Text(pr['store_name'], style: const TextStyle(fontWeight: FontWeight.w500)),
-                  trailing: Text(
-                    "€${pr['price'].toStringAsFixed(2)}", 
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)
+                  leading: Icon(Icons.history, color: statusColor.withOpacity(0.6)),
+                  title: Text(pr['store_name'], style: const TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: Text(statusText, style: TextStyle(color: statusColor, fontSize: 12)),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text("€${pr['price'].toStringAsFixed(2)}", 
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.check_circle, color: Colors.blue),
+                        onPressed: () async {
+                          await _supabase
+                              .from('prices')
+                              .update({'created_at': DateTime.now().toIso8601String()})
+                              .eq('id', pr['id']);
+                          _loadUserFavorites();
+                          if (mounted) Navigator.pop(context);
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Thanks for verifying!")));
+                        },
+                      ),
+                    ],
                   ),
                 ),
               );
@@ -1315,29 +1292,29 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
                 final p = _products[index];
                 double score = p['kcal'] > 0 ? (p['p'] / p['kcal']) * 100 : 0;
                 
-                // Calculate most voted price info
+                // Calculate freshest price info
                 List prices = p['prices'] ?? [];
-                String? mostVotedInfo;
+                String? freshestInfo;
                 if (prices.isNotEmpty && (p['p'] ?? 0) > 0) {
-                  int maxVotes = -999999;
-                  double? bestPrice;
+                  DateTime? mostRecent;
+                  double? freshestPrice;
                   
                   for (var pr in prices) {
-                    List votesList = pr['price_votes'] ?? [];
-                    int totalVotes = 0;
-                    for (var v in votesList) {
-                      totalVotes += (v['vote'] as int);
-                    }
-                    
-                    if (totalVotes > maxVotes) {
-                      maxVotes = totalVotes;
-                      bestPrice = (pr['price'] ?? 0).toDouble();
+                    try {
+                      DateTime priceDate = DateTime.parse(pr['created_at']);
+                      if (mostRecent == null || priceDate.isAfter(mostRecent)) {
+                        mostRecent = priceDate;
+                        freshestPrice = (pr['price'] ?? 0).toDouble();
+                      }
+                    } catch (e) {
+                      // Skip invalid dates
+                      continue;
                     }
                   }
                   
-                  if (bestPrice != null && bestPrice > 0) {
-                    double pricePerGram = bestPrice / p['p'];
-                    mostVotedInfo = "€${pricePerGram.toStringAsFixed(3)} /g protein";
+                  if (freshestPrice != null && freshestPrice > 0) {
+                    double pricePerGram = freshestPrice / p['p'];
+                    freshestInfo = "€${pricePerGram.toStringAsFixed(3)} /g protein";
                   }
                 }
 
@@ -1351,7 +1328,7 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text("${p['brand']} • ${(p['p'] as num).toStringAsFixed(1)}g protein"),
-                        if (mostVotedInfo != null) Text(mostVotedInfo, style: const TextStyle(color: Colors.blueGrey, fontSize: 12))
+                        if (freshestInfo != null) Text(freshestInfo, style: const TextStyle(color: Colors.blueGrey, fontSize: 12))
                       ],
                     ),
                     trailing: _buildScoreCircle(score),
@@ -1774,6 +1751,166 @@ class _SignUpPageState extends State<SignUpPage> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+// --- NIEUW: DE GAINSBOT PAGINA (AI ASSISTENT) ---
+class GainsBotPage extends StatefulWidget {
+  const GainsBotPage({super.key});
+
+  @override
+  State<GainsBotPage> createState() => _GainsBotPageState();
+}
+
+class _GainsBotPageState extends State<GainsBotPage> {
+  // ⚠️ HAAL JE SLEUTEL BIJ: https://aistudio.google.com/
+  static const _apiKey = 'AIzaSyCakEq1AvBbQrMpM2b_nDGwO6pHDJHYflg';
+  
+  late final GenerativeModel _model;
+  late final ChatSession _chat;
+  final TextEditingController _textController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  final List<Map<String, String>> _messages = []; // 'role': 'user' of 'model'
+  bool _loading = false;
+
+  @override
+void initState() {
+  super.initState();
+  _model = GenerativeModel(
+    // Probeer deze exacte naam, dit is de meest stabiele voor v1beta
+    model: 'gemini-2.5-flash', 
+    apiKey: _apiKey,
+    systemInstruction: Content.text("You are GainsBot, the AI assistant for the 'GainSaver' app. You are an expert in protein, fitness, and nutrition. Keep your answers short, motivating, and focused on helping users find cheap protein."),
+    
+  );
+  _chat = _model.startChat();
+}
+
+  Future<void> _sendMessage() async {
+    final message = _textController.text.trim();
+    if (message.isEmpty) return;
+
+    setState(() {
+      _messages.add({'role': 'user', 'text': message});
+      _loading = true;
+    });
+    _textController.clear();
+    _scrollToBottom();
+
+    try {
+  final response = await _chat.sendMessage(Content.text(message));
+  final text = response.text ?? "I'm speechless (literally).";
+
+  setState(() {
+    _messages.add({'role': 'model', 'text': text});
+    });
+  } catch (e) {
+    // DIT IS DE BELANGRIJKSTE REGEL:
+    debugPrint("🚨 GOOGLE AI ERROR: $e"); 
+    
+    setState(() {
+      _messages.add({
+        'role': 'model', 
+        'text': "An error occurred. Check the debug console for details."
+      });
+    });
+  }
+    finally {
+      setState(() => _loading = false);
+      _scrollToBottom();
+    }
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("GainsBot 🤖")),
+      body: Column(
+        children: [
+          Expanded(
+            child: _messages.isEmpty 
+              ? const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(30.0),
+                    child: Text(
+                      "Ask me anything about protein!\n\nExample:\n'Is Skyr better than Quark?'\n'How much protein do I need?'",
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey, fontSize: 16),
+                    ),
+                  ),
+                )
+              : ListView.builder(
+                  controller: _scrollController,
+                  padding: const EdgeInsets.all(15),
+                  itemCount: _messages.length,
+                  itemBuilder: (context, index) {
+                    final msg = _messages[index];
+                    final isUser = msg['role'] == 'user';
+                    return Align(
+                      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+                      child: Container(
+                        margin: const EdgeInsets.symmetric(vertical: 5),
+                        padding: const EdgeInsets.all(12),
+                        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+                        decoration: BoxDecoration(
+                          color: isUser ? Colors.green : Colors.grey[200],
+                          borderRadius: BorderRadius.circular(15).copyWith(
+                            bottomRight: isUser ? Radius.zero : null,
+                            bottomLeft: !isUser ? Radius.zero : null,
+                          ),
+                        ),
+                        child: Text(
+                          msg['text']!,
+                          style: TextStyle(color: isUser ? Colors.white : Colors.black87),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+          ),
+          if (_loading) const Padding(
+            padding: EdgeInsets.all(8.0),
+            child: CircularProgressIndicator(),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _textController,
+                    decoration: InputDecoration(
+                      hintText: "Ask GainsBot...",
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(25)),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+                    ),
+                    onSubmitted: (_) => _sendMessage(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton.filled(
+                  onPressed: _loading ? null : _sendMessage, 
+                  icon: const Icon(Icons.send),
+                  style: IconButton.styleFrom(backgroundColor: Colors.green),
+                )
+              ],
+            ),
+          )
+        ],
       ),
     );
   }
