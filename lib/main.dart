@@ -139,97 +139,102 @@ class _SearchPageState extends State<SearchPage> {
   }
 
 void _runSearch() async {
-    setState(() => _loading = true);
-    try {
-      final user = _supabase.auth.currentUser;
-      dynamic query;
-      String searchText = _searchController.text.trim();
-      
-      // TRUC: Als we op prijs filteren, gebruiken we '!inner'.
-      // Dit dwingt Supabase om ALLEEN producten terug te geven die ook echt een prijs hebben.
-      // Dit werkt ook wanneer je een zoekterm hebt ingevuld.
-      String priceSelect = _sortBy == 'price'
-          ? 'prices!inner(*)'  // !inner = Alleen als er prijzen zijn
-          : 'prices(*)';       // Normaal = Alles mag
+  setState(() => _loading = true);
+  try {
+    final user = _supabase.auth.currentUser;
+    String searchText = _searchController.text.trim();
+    
+    String priceSelect = _sortBy == 'price' ? 'prices!inner(*)' : 'prices(*)';
 
-      // 1. SELECT QUERY BOUWEN
-      if (_showOnlyFavorites && user != null) {
-        query = _supabase
-            .from('favorites')
-            .select('products (*, $priceSelect)') 
-            .eq('user_id', user.id);
+    // GEBRUIK dynamic query om type-errors bij .order() en .limit() te voorkomen
+    dynamic query = _supabase.from('products').select('*, $priceSelect');
+
+    // 3. Favorieten filter
+    if (_showOnlyFavorites && user != null) {
+      final favRes = await _supabase.from('favorites').select('product_code').eq('user_id', user.id);
+      List<String> favCodes = (favRes as List).map((e) => e['product_code'] as String).toList();
+      
+      if (favCodes.isNotEmpty) {
+        query = query.in_('code', favCodes);
       } else {
-        query = _supabase.from('products').select('*, $priceSelect');
+        // Als er geen favorieten zijn, geef een lege lijst terug
+        setState(() {
+          _results = [];
+          _loading = false;
+        });
+        return;
       }
-
-      // 2. ZOEK FILTERS
-      if (searchText.isNotEmpty) {
-        bool isBarcode = RegExp(r'^[0-9]+$').hasMatch(searchText);
-        String codeCol = _showOnlyFavorites ? 'products.code' : 'code';
-        String nameCol = _showOnlyFavorites ? 'products.name' : 'name';
-        String brandCol = _showOnlyFavorites ? 'products.brand' : 'brand';
-
-        if (isBarcode) {
-          query = query.eq(codeCol, searchText);
-        } else {
-          List<String> words = searchText.split(' ').where((w) => w.isNotEmpty).toList();
-          for (var word in words) {
-            query = query.or('$nameCol.ilike.%$word%,$brandCol.ilike.%$word%');
-          }
-        }
-      }
-
-      // 3. SERVER-SIDE SORTERING (Voor niet-prijs filters)
-      if (!_showOnlyFavorites && _sortBy != 'price') {
-        if (_sortBy == 'protein') query = query.order('p', ascending: false);
-        else if (_sortBy == 'name') query = query.order('name', ascending: true);
-        else query = query.order('p', ascending: false);
-      }
-
-      // 4. DATA OPHALEN
-      // Als we op prijs sorteren, halen we meer op (500), anders is 50 genoeg
-      final limit = (_sortBy == 'price' && searchText.isEmpty) ? 500 : 50;
-      final res = await query.limit(limit);
-      
-      // Favorieten ophalen voor de hartjes
-      if (user != null) {
-        final favRes = await _supabase.from('favorites').select('product_code').eq('user_id', user.id);
-        _favoritedProductCodes = (favRes as List).map((e) => e['product_code'] as String).toSet();
-      }
-      
-      setState(() {
-        // 5. DATA UITPAKKEN
-        if (_showOnlyFavorites) {
-          _results = (res as List).map((e) => e['products']).where((e) => e != null).toList();
-        } else {
-          _results = res;
-        }
-        
-        // 6. LOKALE SORTERING
-        if (_sortBy == 'efficiency' || _showOnlyFavorites) {
-          _results.sort((a, b) {
-             double ratioA = (a['kcal'] ?? 0) > 0 ? (a['p'] ?? 0) / a['kcal'] : 0;
-             double ratioB = (b['kcal'] ?? 0) > 0 ? (b['p'] ?? 0) / b['kcal'] : 0;
-             return ratioB.compareTo(ratioA);
-          });
-        } else if (_sortBy == 'protein') {
-          _results.sort((a, b) => (b['p'] ?? 0).compareTo(a['p'] ?? 0));
-        } else if (_sortBy == 'price') {
-          // Als we hier zijn, hebben we dankzij !inner alleen producten MET prijzen
-          // We hoeven dus alleen nog maar te sorteren
-          _results.sort((a, b) {
-            double minA = _getMinPricePerGram(a);
-            double minB = _getMinPricePerGram(b);
-            return minA.compareTo(minB);
-          });
-        }
-      });
-    } catch (e) {
-      debugPrint("Search error: $e");
-    } finally {
-      setState(() => _loading = false);
     }
+
+    // 4. Zoeklogica
+    if (searchText.isNotEmpty) {
+      if (RegExp(r'^[0-9]+$').hasMatch(searchText)) {
+        query = query.eq('code', searchText);
+      } else {
+        List<String> words = searchText.split(' ').where((w) => w.length > 1).toList();
+        if (words.isNotEmpty) {
+          List<String> orParts = [];
+          for (var word in words) {
+            orParts.add('name.ilike.%$word%');
+            orParts.add('brand.ilike.%$word%');
+          }
+          query = query.or(orParts.join(','));
+        }
+      }
+    }
+
+    // 5. Server-side sortering (Nu zonder type-errors!)
+    if (_sortBy == 'protein') {
+      query = query.order('p', ascending: false);
+    } else if (_sortBy == 'name') {
+      query = query.order('name', ascending: true);
+    }
+    
+    // 6. Data ophalen
+    final res = await query.limit(200);
+    
+    setState(() {
+      List<dynamic> allResults = res as List<dynamic>;
+
+      // 6b. CLIENT-SIDE AND-FILTERING: Zorg dat ALLE woorden in name+brand voorkomen
+      if (searchText.isNotEmpty && !RegExp(r'^[0-9]+$').hasMatch(searchText)) {
+        List<String> words = searchText.split(' ').where((w) => w.length > 1).toList();
+        if (words.isNotEmpty) {
+          _results = allResults.where((p) {
+            String fullText = '${(p['name'] ?? '').toString()} ${(p['brand'] ?? '').toString()}'.toLowerCase();
+            // Check of ALLE woorden voorkomen
+            return words.every((word) => fullText.contains(word.toLowerCase()));
+          }).toList();
+        } else {
+          _results = allResults;
+        }
+      } else {
+        _results = allResults;
+      }
+
+      // 7. LOKALE SORTERING
+      if (_sortBy == 'efficiency') {
+        _results.sort((a, b) {
+          double ratioA = (a['kcal'] ?? 0) > 0 ? (a['p'] ?? 0) / a['kcal'] : 0;
+          double ratioB = (b['kcal'] ?? 0) > 0 ? (b['p'] ?? 0) / b['kcal'] : 0;
+          return ratioB.compareTo(ratioA);
+        });
+      } else if (_sortBy == 'price') {
+        _results.sort((a, b) => _getMinPricePerGram(a).compareTo(_getMinPricePerGram(b)));
+      }
+    });
+
+    // Favorieten ophalen voor de hartjes
+    if (user != null) {
+      final favRes = await _supabase.from('favorites').select('product_code').eq('user_id', user.id);
+      _favoritedProductCodes = (favRes as List).map((e) => e['product_code'] as String).toSet();
+    }
+  } catch (e) {
+    debugPrint("Search error: $e");
+  } finally {
+    setState(() => _loading = false);
   }
+}
 
   double _getMinPricePerGram(Map product) => getMinPricePerGram(product);
 
@@ -245,10 +250,10 @@ void _runSearch() async {
     );
   }
 
-  void _showPriceDialog(String code) {
+  void _showPriceDialog(Map<String, dynamic> prod) {
     showPriceDialog(
       context,
-      code,
+      prod,
       _supabase,
       (code, price, store, weight) => _submitPrice(code, price, store, weight),
     );
@@ -839,10 +844,10 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
     }
   }
 
-  void _showPriceDialog(String code) {
+  void _showPriceDialog(Map<String, dynamic> prod) {
     showPriceDialog(
       context,
-      code,
+      prod,
       _supabase,
       (code, price, store, weight) => _submitPrice(code, price, store, weight),
     );
@@ -1276,7 +1281,7 @@ class _SignUpPageState extends State<SignUpPage> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Fout: $e"), backgroundColor: Colors.red),
+          SnackBar(content: Text("Error: $e"), backgroundColor: Colors.red),
         );
       }
     } finally {

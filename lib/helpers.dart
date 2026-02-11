@@ -4,21 +4,24 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 // Helper functies shared tussen SearchPage, DiscoverPage en FavoritesPage
 
 double getMinPricePerGram(Map product) {
-  double min = double.infinity;
   List prices = product['prices'] ?? [];
   double proteinPer100 = (product['p'] ?? 0).toDouble();
-  if (proteinPer100 <= 0) return double.infinity;
+  // Backup gewicht uit de product tabel
+  double defWeight = (product['default_weight'] ?? 100).toDouble();
 
+  double minVal = double.infinity;
   for (var pr in prices) {
-    double pricePerPack = (pr['price'] ?? 0).toDouble();
-    double packWeight = (pr['pack_weight_grams'] ?? 100).toDouble();
+    double p = (pr['price'] ?? 0).toDouble();
+    if (p <= 0) continue;
     
-    double totalProteinInPack = (proteinPer100 / 100) * packWeight;
-    double pricePerGramProtein = pricePerPack / totalProteinInPack;
+    // Check prijs-specifiek gewicht, anders product gewicht
+    double w = (pr['pack_weight_grams'] ?? defWeight);
     
-    if (pricePerGramProtein < min) min = pricePerGramProtein;
+    double totalP = (proteinPer100 / 100) * w;
+    double pricePerGram = p / totalP;
+    if (pricePerGram < minVal) minVal = pricePerGram;
   }
-  return min;
+  return minVal;
 }
 
 Widget buildStat(String val, String lab, Color col) => Column(children: [
@@ -86,30 +89,33 @@ Future<void> submitPrice(
 
 void showPriceDialog(
   BuildContext context,
-  String code,
+  Map<String, dynamic> prod,
   SupabaseClient supabase,
   Function(String, double, String, double) onSubmit,
 ) {
   final priceCont = TextEditingController();
-  final weightCont = TextEditingController(text: "500");
+  String initialWeight = prod['default_weight'] != null 
+      ? prod['default_weight'].toString() 
+      : "500";
+  final weightCont = TextEditingController(text: initialWeight);
   String store = "Albert Heijn";
   
   showDialog(
     context: context,
     builder: (ctx) => AlertDialog(
-      title: const Text("Prijs & Gewicht melden"),
+      title: const Text("Report Price & Weight"),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           TextField(
             controller: priceCont,
-            decoration: const InputDecoration(labelText: "Prijs (€)", hintText: "bijv. 1.50"),
+            decoration: const InputDecoration(labelText: "Price (€)", hintText: "e.g. 1.50"),
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
           ),
           const SizedBox(height: 10),
           TextField(
             controller: weightCont,
-            decoration: const InputDecoration(labelText: "Gewicht van verpakking (gram)", hintText: "bijv. 500"),
+            decoration: const InputDecoration(labelText: "Package weight (grams)", hintText: "e.g. 500"),
             keyboardType: TextInputType.number,
           ),
           const SizedBox(height: 10),
@@ -119,7 +125,7 @@ void showPriceDialog(
                 .map((s) => DropdownMenuItem(value: s, child: Text(s)))
                 .toList(),
             onChanged: (v) => store = v!,
-            decoration: const InputDecoration(labelText: "Winkel"),
+            decoration: const InputDecoration(labelText: "Store"),
           ),
         ],
       ),
@@ -133,7 +139,7 @@ void showPriceDialog(
             final p = double.tryParse(priceCont.text.replaceFirst(',', '.'));
             final w = double.tryParse(weightCont.text.replaceFirst(',', '.'));
             if (p != null && w != null) {
-              onSubmit(code, p, store, w);
+              onSubmit(prod['code'], p, store, w);
             }
           },
           child: const Text("Save"),
@@ -147,7 +153,7 @@ void showDetailsBottomSheet(
   BuildContext context,
   Map<String, dynamic> prod,
   SupabaseClient supabase,
-  Function(String) onShowPriceDialog, {
+  Function(Map<String, dynamic>) onShowPriceDialog, {
   bool showAddPriceButton = true,
 }) {
   List prices = prod['prices'] ?? [];
@@ -182,6 +188,8 @@ void showDetailsBottomSheet(
               buildStat("${protein.toStringAsFixed(1)}g", "Protein", Colors.green),
               buildStat("${kcal.toStringAsFixed(1)}", "Kcal", Colors.blue),
               buildStat(ratio, "Ratio", Colors.purple),
+              // NIEUW: Toon standaard gewicht
+              buildStat("${prod['default_weight'] ?? '?'}g", "Weight", Colors.orange),
             ],
           ),
           const Divider(height: 40),
@@ -252,7 +260,7 @@ void showDetailsBottomSheet(
               width: double.infinity,
               height: 50,
               child: ElevatedButton.icon(
-                onPressed: () => onShowPriceDialog(prod['code']),
+                onPressed: () => onShowPriceDialog(prod),
                 icon: const Icon(Icons.add_shopping_cart),
                 label: const Text("Add Price"),
                 style: ElevatedButton.styleFrom(
