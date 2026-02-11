@@ -146,8 +146,8 @@ void _runSearch() async {
       
       // TRUC: Als we op prijs filteren, gebruiken we '!inner'.
       // Dit dwingt Supabase om ALLEEN producten terug te geven die ook echt een prijs hebben.
-      // Hierdoor verspillen we de limiet van 500 niet aan producten zonder prijs.
-      String priceSelect = (_sortBy == 'price' && searchText.isEmpty) 
+      // Dit werkt ook wanneer je een zoekterm hebt ingevuld.
+      String priceSelect = _sortBy == 'price'
           ? 'prices!inner(*)'  // !inner = Alleen als er prijzen zijn
           : 'prices(*)';       // Normaal = Alles mag
 
@@ -234,20 +234,29 @@ void _runSearch() async {
   double _getMinPricePerGram(Map product) {
     double min = double.infinity;
     List prices = product['prices'] ?? [];
-    double protein = (product['p'] ?? 0).toDouble();
-    if (protein <= 0) return double.infinity;
+    double proteinPer100 = (product['p'] ?? 0).toDouble();
+    if (proteinPer100 <= 0) return double.infinity;
 
     for (var pr in prices) {
-      double price = (pr['price'] ?? 0).toDouble();
-      double pricePerGram = price / protein;
-      if (pricePerGram < min) min = pricePerGram;
+      double pricePerPack = (pr['price'] ?? 0).toDouble();
+      double packWeight = (pr['pack_weight_grams'] ?? 100).toDouble();
+      
+      double totalProteinInPack = (proteinPer100 / 100) * packWeight;
+      double pricePerGramProtein = pricePerPack / totalProteinInPack;
+      
+      if (pricePerGramProtein < min) min = pricePerGramProtein;
     }
     return min;
   }
 
-  Future<void> _submitPrice(String code, double price, String store) async {
+  Future<void> _submitPrice(String code, double price, String store, double weight) async {
     try {
-      await _supabase.from('prices').insert({'product_code': code, 'price': price, 'store_name': store});
+      await _supabase.from('prices').insert({
+        'product_code': code, 
+        'price': price, 
+        'store_name': store,
+        'pack_weight_grams': weight
+      });
       _runSearch(); 
       if (mounted) Navigator.pop(context);
     } catch (e) { debugPrint("Error: $e"); }
@@ -255,19 +264,33 @@ void _runSearch() async {
 
   void _showPriceDialog(String code) {
     final priceCont = TextEditingController();
+    final weightCont = TextEditingController(text: "500");
     String store = "Albert Heijn";
+    
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text("Add Price"),
+        title: const Text("Prijs & Gewicht melden"),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: priceCont, decoration: const InputDecoration(labelText: "Price (€)"), keyboardType: const TextInputType.numberWithOptions(decimal: true)),
+            TextField(
+              controller: priceCont, 
+              decoration: const InputDecoration(labelText: "Prijs (€)", hintText: "bijv. 1.50"), 
+              keyboardType: const TextInputType.numberWithOptions(decimal: true)
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: weightCont, 
+              decoration: const InputDecoration(labelText: "Gewicht van verpakking (gram)", hintText: "bijv. 500"), 
+              keyboardType: TextInputType.number
+            ),
+            const SizedBox(height: 10),
             DropdownButtonFormField<String>(
               value: store,
               items: ["Albert Heijn", "Jumbo", "Delhaize", "Aldi", "Lidl", "Colruyt"].map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
               onChanged: (v) => store = v!,
+              decoration: const InputDecoration(labelText: "Winkel"),
             )
           ],
         ),
@@ -275,7 +298,10 @@ void _runSearch() async {
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
           ElevatedButton(onPressed: () {
               final p = double.tryParse(priceCont.text.replaceFirst(',', '.'));
-              if (p != null) _submitPrice(code, p, store);
+              final w = double.tryParse(weightCont.text.replaceFirst(',', '.'));
+              if (p != null && w != null) {
+                _submitPrice(code, p, store, w);
+              }
             }, child: const Text("Save")),
         ],
       ),
@@ -337,7 +363,7 @@ void _runSearch() async {
                 ),
                 child: ListTile(
                   leading: Icon(Icons.history, color: statusColor.withOpacity(0.6)),
-                  title: Text(pr['store_name'], style: const TextStyle(fontWeight: FontWeight.w600)),
+                  title: Text("${pr['store_name']} (${pr['pack_weight_grams'] ?? 100}g)", style: const TextStyle(fontWeight: FontWeight.w600)),
                   subtitle: Text(statusText, style: TextStyle(color: statusColor, fontSize: 12)),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -1076,12 +1102,13 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
 
   // --- DETAIL FUNCTIONS (Copied and adjusted for this page) ---
   
-  Future<void> _submitPrice(String code, double price, String store) async {
+  Future<void> _submitPrice(String code, double price, String store, double weight) async {
     try {
       await _supabase.from('prices').insert({
         'product_code': code,
         'price': price,
         'store_name': store,
+        'pack_weight_grams': weight
       });
       _loadUserFavorites(); // Refresh list after adding
       if (mounted) Navigator.pop(context);
@@ -1111,21 +1138,33 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
 
   void _showPriceDialog(String code) {
     final priceCont = TextEditingController();
+    final weightCont = TextEditingController(text: "500");
     String store = "Albert Heijn";
+    
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text("Report price"),
+        title: const Text("Prijs & Gewicht melden"),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: priceCont, decoration: const InputDecoration(labelText: "Price (€)"), keyboardType: const TextInputType.numberWithOptions(decimal: true)),
+            TextField(
+              controller: priceCont, 
+              decoration: const InputDecoration(labelText: "Prijs (€)", hintText: "bijv. 1.50"), 
+              keyboardType: const TextInputType.numberWithOptions(decimal: true)
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: weightCont, 
+              decoration: const InputDecoration(labelText: "Gewicht van verpakking (gram)", hintText: "bijv. 500"), 
+              keyboardType: TextInputType.number
+            ),
             const SizedBox(height: 10),
             DropdownButtonFormField<String>(
               value: store,
               items: ["Albert Heijn", "Jumbo", "Delhaize", "Aldi", "Lidl", "Colruyt"].map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
               onChanged: (v) => store = v!,
-              decoration: const InputDecoration(labelText: "Store"),
+              decoration: const InputDecoration(labelText: "Winkel"),
             )
           ],
         ),
@@ -1133,7 +1172,10 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
           ElevatedButton(onPressed: () {
               final p = double.tryParse(priceCont.text.replaceFirst(',', '.'));
-              if (p != null) _submitPrice(code, p, store);
+              final w = double.tryParse(weightCont.text.replaceFirst(',', '.'));
+              if (p != null && w != null) {
+                _submitPrice(code, p, store, w);
+              }
             }, child: const Text("Save")),
         ],
       ),
@@ -1189,7 +1231,7 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
                 ),
                 child: ListTile(
                   leading: Icon(Icons.history, color: statusColor.withOpacity(0.6)),
-                  title: Text(pr['store_name'], style: const TextStyle(fontWeight: FontWeight.w600)),
+                  title: Text("${pr['store_name']} (${pr['pack_weight_grams'] ?? 100}g)", style: const TextStyle(fontWeight: FontWeight.w600)),
                   subtitle: Text(statusText, style: TextStyle(color: statusColor, fontSize: 12)),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
