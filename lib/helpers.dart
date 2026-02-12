@@ -6,22 +6,41 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 double getMinPricePerGram(Map product) {
   List prices = product['prices'] ?? [];
   double proteinPer100 = (product['p'] ?? 0).toDouble();
-  // Backup gewicht uit de product tabel
-  double defWeight = (product['default_weight'] ?? 100).toDouble();
+
+  // DEBUG: Laat zien wat we ontvangen
+  debugPrint('🔍 DEBUG getMinPricePerGram - Prices data: ${prices.length} prices found');
+  if (prices.isNotEmpty) {
+    debugPrint('   First price: ${prices.first}');
+  }
 
   double minVal = double.infinity;
   for (var pr in prices) {
     double p = (pr['price'] ?? 0).toDouble();
     if (p <= 0) continue;
     
-    // Check prijs-specifiek gewicht, anders product gewicht
-    double w = (pr['pack_weight_grams'] ?? defWeight);
+    // BELANGRIJK: Probeer pack_weight_grams op te halen
+    // Dit kan een int, double, of string zijn
+    double w = 100; // default fallback
+    
+    if (pr['pack_weight_grams'] != null) {
+      if (pr['pack_weight_grams'] is String) {
+        w = double.tryParse(pr['pack_weight_grams']) ?? 100;
+      } else {
+        w = (pr['pack_weight_grams'] as num).toDouble();
+      }
+    }
+    
+    debugPrint('   Price: €$p, Weight: ${w}g, Protein%: $proteinPer100/100');
+    
+    if (proteinPer100 <= 0 || w <= 0) continue;
     
     double totalP = (proteinPer100 / 100) * w;
-    double pricePerGram = p / totalP;
+    double pricePerGram = totalP > 0 ? p / totalP : 0;
+    debugPrint('   → Total protein: ${totalP}g, PricePerGram: €$pricePerGram');
     if (pricePerGram < minVal) minVal = pricePerGram;
   }
-  return minVal;
+  debugPrint('   Final minVal: €$minVal\n');
+  return minVal == double.infinity ? 0 : minVal;
 }
 
 Widget buildStat(String val, String lab, Color col) => Column(children: [

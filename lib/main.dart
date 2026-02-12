@@ -91,6 +91,7 @@ class _SearchPageState extends State<SearchPage> {
   String _sortBy = 'efficiency';
   final TextEditingController _searchController = TextEditingController();
   Set<String> _favoritedProductCodes = {};
+  double? _maxPricePerGram; // null = no filter
 
   @override
   void initState() {
@@ -102,15 +103,30 @@ class _SearchPageState extends State<SearchPage> {
     final user = _supabase.auth.currentUser;
     if (user == null) return;
 
+    final isCurrentlyFavorited = _favoritedProductCodes.contains(productCode);
+
     try {
-      await _supabase.from('favorites').insert({'user_id': user.id, 'product_code': productCode});
-      setState(() => _favoritedProductCodes.add(productCode));
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Added to favorites!")));
-    } catch (e) {
-      await _supabase.from('favorites').delete().match({'user_id': user.id, 'product_code': productCode});
-      setState(() => _favoritedProductCodes.remove(productCode));
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Removed from favorites")));
+      if (isCurrentlyFavorited) {
+        // Remove from favorites
+        await _supabase.from('favorites').delete().match({'user_id': user.id, 'product_code': productCode});
+        setState(() => _favoritedProductCodes.remove(productCode));
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Removed from favorites")));
+      } else {
+        // Add to favorites
+        await _supabase.from('favorites').insert({'user_id': user.id, 'product_code': productCode});
+        setState(() => _favoritedProductCodes.add(productCode));
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Added to favorites!")));
+      }
+      
+      // Always refresh if favorites filter is active
       if (_showOnlyFavorites) _runSearch();
+    } catch (e) {
+      debugPrint("🚨 FAVORITE TOGGLE ERROR: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error: $e"), backgroundColor: Colors.red)
+        );
+      }
     }
   }
 
@@ -138,81 +154,102 @@ class _SearchPageState extends State<SearchPage> {
     );
   }
 
-void _runSearch() async {
+  void _runSearch() async {
   setState(() => _loading = true);
   try {
     final user = _supabase.auth.currentUser;
     String searchText = _searchController.text.trim();
     
-    String priceSelect = _sortBy == 'price' ? 'prices!inner(*)' : 'prices(*)';
-
-    // GEBRUIK dynamic query om type-errors bij .order() en .limit() te voorkomen
-    dynamic query = _supabase.from('products').select('*, $priceSelect');
-
-    // 3. Favorieten filter
-    if (_showOnlyFavorites && user != null) {
-      final favRes = await _supabase.from('favorites').select('product_code').eq('user_id', user.id);
-      List<String> favCodes = (favRes as List).map((e) => e['product_code'] as String).toList();
-      
-      if (favCodes.isNotEmpty) {
-        query = query.in_('code', favCodes);
-      } else {
-        // Als er geen favorieten zijn, geef een lege lijst terug
-        setState(() {
-          _results = [];
-          _loading = false;
-        });
-        return;
+    // 1. FETCH CURRENT FAVORITES FROM DB
+    Set<String> favoritedCodes = {};
+    if (user != null) {
+      try {
+        final favRes = await _supabase
+            .from('favorites')
+            .select('product_code')
+            .eq('user_id', user.id);
+        if (favRes is List) {
+          favoritedCodes = (favRes).map((e) => (e['product_code'] as String?) ?? '').where((code) => code.isNotEmpty).toSet();
+        }
+      } catch (e) {
+        debugPrint("🚨 ERROR FETCHING FAVORITES: $e");
       }
     }
 
-    // 4. Zoeklogica
+    // 2. DETERMINE JOIN (Prices)
+    String priceSelect = _sortBy == 'price' ? 'prices!inner(*)' : 'prices(*)';
+
+    // 3. START BASE QUERY
+    dynamic query = _supabase.from('products').select('*, $priceSelect');
+
+    // 4. FILTER: Favorites
+    if (_showOnlyFavorites) {
+      if (favoritedCodes.isNotEmpty) {
+        query = query.inFilter('code', favoritedCodes.toList());
+      } else {
+        setState(() {
+          _results = [];
+          _favoritedProductCodes = {};
+          _loading = false;
+        });
+        return; 
+      }
+    }
+
+    // 5. FILTER: Search term
     if (searchText.isNotEmpty) {
       if (RegExp(r'^[0-9]+$').hasMatch(searchText)) {
         query = query.eq('code', searchText);
       } else {
         List<String> words = searchText.split(' ').where((w) => w.length > 1).toList();
         if (words.isNotEmpty) {
-          List<String> orParts = [];
+          List<String> orConditions = [];
           for (var word in words) {
-            orParts.add('name.ilike.%$word%');
-            orParts.add('brand.ilike.%$word%');
+            orConditions.add('name.ilike.%$word%');
+            orConditions.add('brand.ilike.%$word%');
           }
-          query = query.or(orParts.join(','));
+          query = query.or(orConditions.join(','));
         }
       }
     }
 
-    // 5. Server-side sortering (Nu zonder type-errors!)
+    // 6. SERVER-SIDE SORTING
     if (_sortBy == 'protein') {
       query = query.order('p', ascending: false);
     } else if (_sortBy == 'name') {
       query = query.order('name', ascending: true);
     }
     
-    // 6. Data ophalen
+    // 7. FETCH DATA (reduced limit to avoid timeouts)
     final res = await query.limit(200);
-    
-    setState(() {
-      List<dynamic> allResults = res as List<dynamic>;
+    List<dynamic> fetchedData = res as List<dynamic>;
 
-      // 6b. CLIENT-SIDE AND-FILTERING: Zorg dat ALLE woorden in name+brand voorkomen
-      if (searchText.isNotEmpty && !RegExp(r'^[0-9]+$').hasMatch(searchText)) {
-        List<String> words = searchText.split(' ').where((w) => w.length > 1).toList();
-        if (words.isNotEmpty) {
-          _results = allResults.where((p) {
-            String fullText = '${(p['name'] ?? '').toString()} ${(p['brand'] ?? '').toString()}'.toLowerCase();
-            // Check of ALLE woorden voorkomen
-            return words.every((word) => fullText.contains(word.toLowerCase()));
-          }).toList();
-        } else {
-          _results = allResults;
-        }
-      } else {
-        _results = allResults;
+    // 8. CLIENT-SIDE REFINEMENT
+    setState(() {
+      if (_showOnlyFavorites) {
+        fetchedData = fetchedData.where((p) => favoritedCodes.contains(p['code'])).toList();
       }
 
-      // 7. LOKALE SORTERING
+      // Refine text search: ALL words must be present
+      if (searchText.isNotEmpty && !RegExp(r'^[0-9]+$').hasMatch(searchText)) {
+        List<String> searchWords = searchText.toLowerCase().split(' ').where((w) => w.isNotEmpty).toList();
+        _results = fetchedData.where((p) {
+          String combinedText = '${p['name'] ?? ''} ${p['brand'] ?? ''}'.toLowerCase();
+          return searchWords.every((word) => combinedText.contains(word));
+        }).toList();
+      } else {
+        _results = fetchedData;
+      }
+
+      // Filter by price/g if set
+      if (_maxPricePerGram != null) {
+        _results = _results.where((p) {
+          double pricePerGram = _getMinPricePerGram(p);
+          return pricePerGram > 0 && pricePerGram <= _maxPricePerGram!;
+        }).toList();
+      }
+
+      // 9. LOCAL SORTING
       if (_sortBy == 'efficiency') {
         _results.sort((a, b) {
           double ratioA = (a['kcal'] ?? 0) > 0 ? (a['p'] ?? 0) / a['kcal'] : 0;
@@ -222,15 +259,12 @@ void _runSearch() async {
       } else if (_sortBy == 'price') {
         _results.sort((a, b) => _getMinPricePerGram(a).compareTo(_getMinPricePerGram(b)));
       }
-    });
 
-    // Favorieten ophalen voor de hartjes
-    if (user != null) {
-      final favRes = await _supabase.from('favorites').select('product_code').eq('user_id', user.id);
-      _favoritedProductCodes = (favRes as List).map((e) => e['product_code'] as String).toSet();
-    }
+      // Sync favorites
+      _favoritedProductCodes = favoritedCodes;
+    });
   } catch (e) {
-    debugPrint("Search error: $e");
+    debugPrint("🚨 SEARCH CRITICAL ERROR: $e");
   } finally {
     setState(() => _loading = false);
   }
@@ -265,6 +299,56 @@ void _runSearch() async {
       prod,
       _supabase,
       _showPriceDialog,
+    );
+  }
+
+  void _showPricePerGramDialog() {
+    final controller = TextEditingController(text: _maxPricePerGram?.toStringAsFixed(2) ?? '0.10');
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Max Price per Gram'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Show only products with price per gram of protein below:'),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                prefixText: '€',
+                suffixText: '/g',
+                border: OutlineInputBorder(),
+                hintText: '0.10',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = double.tryParse(controller.text);
+              if (value != null && value > 0) {
+                setState(() {
+                  _maxPricePerGram = value;
+                  _runSearch();
+                });
+                Navigator.pop(ctx);
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Please enter a valid price')),
+                );
+              }
+            },
+            child: const Text('Apply'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -311,6 +395,19 @@ void _runSearch() async {
               selected: _showOnlyFavorites,
               onSelected: (v) => setState(() { _showOnlyFavorites = v; _runSearch(); }),
               selectedColor: Colors.red[100],
+            ),
+            const SizedBox(width: 8),
+            FilterChip(
+              label: Text(_maxPricePerGram == null ? "Max €/g" : "≤€${_maxPricePerGram!.toStringAsFixed(2)}/g"),
+              selected: _maxPricePerGram != null,
+              onSelected: (v) {
+                if (v) {
+                  _showPricePerGramDialog();
+                } else {
+                  setState(() { _maxPricePerGram = null; _runSearch(); });
+                }
+              },
+              selectedColor: Colors.green[100],
             ),
             const SizedBox(width: 8),
             ChoiceChip(label: const Text("Ratio"), selected: _sortBy == 'efficiency', onSelected: (s) { if(s) setState(() {_sortBy='efficiency'; _runSearch();}); }),
