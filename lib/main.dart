@@ -91,6 +91,7 @@ class _SearchPageState extends State<SearchPage> {
   String _sortBy = 'efficiency';
   final TextEditingController _searchController = TextEditingController();
   Set<String> _favoritedProductCodes = {};
+  double? _maxPricePerGram; // null = no filter
 
   @override
   void initState() {
@@ -175,12 +176,11 @@ class _SearchPageState extends State<SearchPage> {
       }
     }
 
-    // 2. ALWAYS FETCH PRICES (use regular join, avoid inner join timeout)
-    // Sorting by price is done client-side anyway
-    String priceSelect = 'prices!fk_prices_product_code(id,price,pack_weight_grams,created_at,store_name)';
+    // 2. DETERMINE JOIN (Prices)
+    String priceSelect = _sortBy == 'price' ? 'prices!inner(*)' : 'prices(*)';
 
     // 3. START BASE QUERY
-    dynamic query = _supabase.from('products').select('code,name,brand,p,kcal,c,f,$priceSelect');
+    dynamic query = _supabase.from('products').select('*, $priceSelect');
 
     // 4. FILTER: Favorites
     if (_showOnlyFavorites) {
@@ -220,25 +220,9 @@ class _SearchPageState extends State<SearchPage> {
       query = query.order('name', ascending: true);
     }
     
-    // 7. FETCH DATA
-    final res = await query.limit(400);
+    // 7. FETCH DATA (reduced limit to avoid timeouts)
+    final res = await query.limit(200);
     List<dynamic> fetchedData = res as List<dynamic>;
-
-    // Always fetch prices separately and merge (join is unreliable)
-    try {
-      final pricesRes = await _supabase.from('prices').select();
-      final Map<String, List> pricesByCode = {};
-      for (var p in (pricesRes as List)) {
-        final code = p['product_code'] as String;
-        pricesByCode.putIfAbsent(code, () => []).add(p);
-      }
-      // Inject prices into products
-      for (var prod in fetchedData) {
-        prod['prices'] = pricesByCode[prod['code']] ?? [];
-      }
-    } catch (e) {
-      debugPrint("⚠️ Price fetch failed: $e");
-    }
 
     // 8. CLIENT-SIDE REFINEMENT
     setState(() {
@@ -257,6 +241,14 @@ class _SearchPageState extends State<SearchPage> {
         _results = fetchedData;
       }
 
+      // Filter by price/g if set
+      if (_maxPricePerGram != null) {
+        _results = _results.where((p) {
+          double pricePerGram = _getMinPricePerGram(p);
+          return pricePerGram > 0 && pricePerGram <= _maxPricePerGram!;
+        }).toList();
+      }
+
       // 9. LOCAL SORTING
       if (_sortBy == 'efficiency') {
         _results.sort((a, b) {
@@ -265,14 +257,7 @@ class _SearchPageState extends State<SearchPage> {
           return ratioB.compareTo(ratioA);
         });
       } else if (_sortBy == 'price') {
-        // Filter to only products with prices, then sort
-        List<dynamic> productsWithPrices = _results.where((p) {
-          List prices = p['prices'] ?? [];
-          return prices.isNotEmpty;
-        }).toList();
-        
-        productsWithPrices.sort((a, b) => _getMinPricePerGram(a).compareTo(_getMinPricePerGram(b)));
-        _results = productsWithPrices;
+        _results.sort((a, b) => _getMinPricePerGram(a).compareTo(_getMinPricePerGram(b)));
       }
 
       // Sync favorites
@@ -314,6 +299,56 @@ class _SearchPageState extends State<SearchPage> {
       prod,
       _supabase,
       _showPriceDialog,
+    );
+  }
+
+  void _showPricePerGramDialog() {
+    final controller = TextEditingController(text: _maxPricePerGram?.toStringAsFixed(2) ?? '0.10');
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Max Price per Gram'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Show only products with price per gram of protein below:'),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                prefixText: '€',
+                suffixText: '/g',
+                border: OutlineInputBorder(),
+                hintText: '0.10',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = double.tryParse(controller.text);
+              if (value != null && value > 0) {
+                setState(() {
+                  _maxPricePerGram = value;
+                  _runSearch();
+                });
+                Navigator.pop(ctx);
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Please enter a valid price')),
+                );
+              }
+            },
+            child: const Text('Apply'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -360,6 +395,19 @@ class _SearchPageState extends State<SearchPage> {
               selected: _showOnlyFavorites,
               onSelected: (v) => setState(() { _showOnlyFavorites = v; _runSearch(); }),
               selectedColor: Colors.red[100],
+            ),
+            const SizedBox(width: 8),
+            FilterChip(
+              label: Text(_maxPricePerGram == null ? "Max €/g" : "≤€${_maxPricePerGram!.toStringAsFixed(2)}/g"),
+              selected: _maxPricePerGram != null,
+              onSelected: (v) {
+                if (v) {
+                  _showPricePerGramDialog();
+                } else {
+                  setState(() { _maxPricePerGram = null; _runSearch(); });
+                }
+              },
+              selectedColor: Colors.green[100],
             ),
             const SizedBox(width: 8),
             ChoiceChip(label: const Text("Ratio"), selected: _sortBy == 'efficiency', onSelected: (s) { if(s) setState(() {_sortBy='efficiency'; _runSearch();}); }),
@@ -430,7 +478,6 @@ Expanded(
             if (prices.isNotEmpty && (p['p'] ?? 0) > 0) {
               DateTime? mostRecent;
               double? freshestPrice;
-              double? freshestWeight;
               
               for (var pr in prices) {
                 try {
@@ -438,16 +485,6 @@ Expanded(
                   if (mostRecent == null || priceDate.isAfter(mostRecent)) {
                     mostRecent = priceDate;
                     freshestPrice = (pr['price'] ?? 0).toDouble();
-                    // Get pack weight (with fallback to 100g if not specified)
-                    if (pr['pack_weight_grams'] != null) {
-                      if (pr['pack_weight_grams'] is String) {
-                        freshestWeight = double.tryParse(pr['pack_weight_grams']) ?? 100;
-                      } else {
-                        freshestWeight = (pr['pack_weight_grams'] as num).toDouble();
-                      }
-                    } else {
-                      freshestWeight = 100;
-                    }
                   }
                 } catch (e) {
                   // Skip invalid dates
@@ -455,10 +492,9 @@ Expanded(
                 }
               }
               
-              if (freshestPrice != null && freshestPrice > 0 && freshestWeight != null && freshestWeight > 0) {
-                double proteinPerPack = (p['p'] / 100) * freshestWeight;
-                double pricePerGramProtein = freshestPrice / proteinPerPack;
-                freshestPriceInfo = "€${pricePerGramProtein.toStringAsFixed(3)} /g protein";
+              if (freshestPrice != null && freshestPrice > 0) {
+                double pricePerGram = freshestPrice / p['p'];
+                freshestPriceInfo = "€${pricePerGram.toStringAsFixed(3)} /g protein";
               }
             }
 
@@ -636,7 +672,6 @@ class _DiscoverPageState extends State<DiscoverPage> {
                     if (prices.isNotEmpty && (product['p'] ?? 0) > 0) {
                       DateTime? mostRecent;
                       double? freshestPrice;
-                      double? freshestWeight;
                       
                       for (var pr in prices) {
                         try {
@@ -644,16 +679,6 @@ class _DiscoverPageState extends State<DiscoverPage> {
                           if (mostRecent == null || priceDate.isAfter(mostRecent)) {
                             mostRecent = priceDate;
                             freshestPrice = (pr['price'] ?? 0).toDouble();
-                            // Get pack weight (with fallback to 100g if not specified)
-                            if (pr['pack_weight_grams'] != null) {
-                              if (pr['pack_weight_grams'] is String) {
-                                freshestWeight = double.tryParse(pr['pack_weight_grams']) ?? 100;
-                              } else {
-                                freshestWeight = (pr['pack_weight_grams'] as num).toDouble();
-                              }
-                            } else {
-                              freshestWeight = 100;
-                            }
                           }
                         } catch (e) {
                           // Skip invalid dates
@@ -661,10 +686,9 @@ class _DiscoverPageState extends State<DiscoverPage> {
                         }
                       }
                       
-                      if (freshestPrice != null && freshestPrice > 0 && freshestWeight != null && freshestWeight > 0) {
-                        double proteinPerPack = (product['p'] / 100) * freshestWeight;
-                        double pricePerGramProtein = freshestPrice / proteinPerPack;
-                        freshestPriceInfo = "€${pricePerGramProtein.toStringAsFixed(3)} /g protein";
+                      if (freshestPrice != null && freshestPrice > 0) {
+                        double pricePerGram = freshestPrice / product['p'];
+                        freshestPriceInfo = "€${pricePerGram.toStringAsFixed(3)} /g protein";
                       }
                     }
 
@@ -960,7 +984,6 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
                 if (prices.isNotEmpty && (p['p'] ?? 0) > 0) {
                   DateTime? mostRecent;
                   double? freshestPrice;
-                  double? freshestWeight;
                   
                   for (var pr in prices) {
                     try {
@@ -968,16 +991,6 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
                       if (mostRecent == null || priceDate.isAfter(mostRecent)) {
                         mostRecent = priceDate;
                         freshestPrice = (pr['price'] ?? 0).toDouble();
-                        // Get pack weight (with fallback to 100g if not specified)
-                        if (pr['pack_weight_grams'] != null) {
-                          if (pr['pack_weight_grams'] is String) {
-                            freshestWeight = double.tryParse(pr['pack_weight_grams']) ?? 100;
-                          } else {
-                            freshestWeight = (pr['pack_weight_grams'] as num).toDouble();
-                          }
-                        } else {
-                          freshestWeight = 100;
-                        }
                       }
                     } catch (e) {
                       // Skip invalid dates
@@ -985,10 +998,9 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
                     }
                   }
                   
-                  if (freshestPrice != null && freshestPrice > 0 && freshestWeight != null && freshestWeight > 0) {
-                    double proteinPerPack = (p['p'] / 100) * freshestWeight;
-                    double pricePerGramProtein = freshestPrice / proteinPerPack;
-                    freshestInfo = "€${pricePerGramProtein.toStringAsFixed(3)} /g protein";
+                  if (freshestPrice != null && freshestPrice > 0) {
+                    double pricePerGram = freshestPrice / p['p'];
+                    freshestInfo = "€${pricePerGram.toStringAsFixed(3)} /g protein";
                   }
                 }
 
