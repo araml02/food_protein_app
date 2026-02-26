@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'package:google_generative_ai/google_generative_ai.dart';
 import 'helpers.dart'; 
 
 void main() async {
@@ -52,7 +51,6 @@ class _MainScreenState extends State<MainScreen> {
     const SearchPage(),
     const DiscoverPage(),
     const CommunityPage(),
-    const GainsBotPage(),
   ];
 
   @override
@@ -69,7 +67,6 @@ class _MainScreenState extends State<MainScreen> {
           NavigationDestination(icon: Icon(Icons.fitness_center), label: 'Products'),
           NavigationDestination(icon: Icon(Icons.explore), label: 'Discover'),
           NavigationDestination(icon: Icon(Icons.group), label: 'Community'),
-          NavigationDestination(icon: Icon(Icons.smart_toy), label: 'AI Coach'),
         ],
       ),
     );
@@ -1442,162 +1439,3 @@ class _SignUpPageState extends State<SignUpPage> {
   }
 }
 
-// --- NIEUW: DE GAINSBOT PAGINA (AI ASSISTENT) ---
-class GainsBotPage extends StatefulWidget {
-  const GainsBotPage({super.key});
-
-  @override
-  State<GainsBotPage> createState() => _GainsBotPageState();
-}
-
-class _GainsBotPageState extends State<GainsBotPage> {
-  // ⚠️ HAAL JE SLEUTEL BIJ: https://aistudio.google.com/
-  static const _apiKey = 'AIzaSyCakEq1AvBbQrMpM2b_nDGwO6pHDJHYflg';
-  
-  late final GenerativeModel _model;
-  late final ChatSession _chat;
-  final TextEditingController _textController = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
-  final List<Map<String, String>> _messages = []; // 'role': 'user' of 'model'
-  bool _loading = false;
-
-  @override
-void initState() {
-  super.initState();
-  _model = GenerativeModel(
-    // Probeer deze exacte naam, dit is de meest stabiele voor v1beta
-    model: 'gemini-2.5-flash', 
-    apiKey: _apiKey,
-    systemInstruction: Content.text("You are GainsBot, the AI assistant for the 'GainSaver' app. You are an expert in protein, fitness, and nutrition. Keep your answers short, motivating, and focused on helping users find cheap protein."),
-    
-  );
-  _chat = _model.startChat();
-}
-
-  Future<void> _sendMessage() async {
-    final message = _textController.text.trim();
-    if (message.isEmpty) return;
-
-    setState(() {
-      _messages.add({'role': 'user', 'text': message});
-      _loading = true;
-    });
-    _textController.clear();
-    _scrollToBottom();
-
-    try {
-  final response = await _chat.sendMessage(Content.text(message));
-  final text = response.text ?? "I'm speechless (literally).";
-
-  setState(() {
-    _messages.add({'role': 'model', 'text': text});
-    });
-  } catch (e) {
-    // DIT IS DE BELANGRIJKSTE REGEL:
-    debugPrint("🚨 GOOGLE AI ERROR: $e"); 
-    
-    setState(() {
-      _messages.add({
-        'role': 'model', 
-        'text': "An error occurred. Check the debug console for details."
-      });
-    });
-  }
-    finally {
-      setState(() => _loading = false);
-      _scrollToBottom();
-    }
-  }
-
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      }
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text("GainsBot 🤖")),
-      body: Column(
-        children: [
-          Expanded(
-            child: _messages.isEmpty 
-              ? const Center(
-                  child: Padding(
-                    padding: EdgeInsets.all(30.0),
-                    child: Text(
-                      "Ask me anything about protein!\n\nExample:\n'Is Skyr better than Quark?'\n'How much protein do I need?'",
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.grey, fontSize: 16),
-                    ),
-                  ),
-                )
-              : ListView.builder(
-                  controller: _scrollController,
-                  padding: const EdgeInsets.all(15),
-                  itemCount: _messages.length,
-                  itemBuilder: (context, index) {
-                    final msg = _messages[index];
-                    final isUser = msg['role'] == 'user';
-                    return Align(
-                      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-                      child: Container(
-                        margin: const EdgeInsets.symmetric(vertical: 5),
-                        padding: const EdgeInsets.all(12),
-                        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
-                        decoration: BoxDecoration(
-                          color: isUser ? Colors.green : Colors.grey[200],
-                          borderRadius: BorderRadius.circular(15).copyWith(
-                            bottomRight: isUser ? Radius.zero : null,
-                            bottomLeft: !isUser ? Radius.zero : null,
-                          ),
-                        ),
-                        child: Text(
-                          msg['text']!,
-                          style: TextStyle(color: isUser ? Colors.white : Colors.black87),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-          ),
-          if (_loading) const Padding(
-            padding: EdgeInsets.all(8.0),
-            child: CircularProgressIndicator(),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _textController,
-                    decoration: InputDecoration(
-                      hintText: "Ask GainsBot...",
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(25)),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 20),
-                    ),
-                    onSubmitted: (_) => _sendMessage(),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                IconButton.filled(
-                  onPressed: _loading ? null : _sendMessage, 
-                  icon: const Icon(Icons.send),
-                  style: IconButton.styleFrom(backgroundColor: Colors.green),
-                )
-              ],
-            ),
-          )
-        ],
-      ),
-    );
-  }
-}
