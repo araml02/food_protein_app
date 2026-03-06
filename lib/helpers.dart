@@ -50,15 +50,15 @@ Widget buildStat(String val, String lab, Color col) => Column(children: [
 
 Widget buildScoreCircle(double score) {
   Color scoreColor;
-  if (score < 5) {
+  if (score < 20) {
     scoreColor = Colors.red;
-  } else if (score < 15) {
+  } else if (score < 60) {
     scoreColor = Colors.orange;
   } else {
     scoreColor = Colors.green;
   }
   
-  double progress = (score / 25).clamp(0, 1);
+  double progress = (score / 100).clamp(0, 1);
   
   return SizedBox(
     width: 60,
@@ -178,7 +178,7 @@ void showDetailsBottomSheet(
   List prices = prod['prices'] ?? [];
   final num kcal = (prod['kcal'] ?? 0) as num;
   final num protein = (prod['p'] ?? 0) as num;
-  final String ratio = kcal > 0 ? ((protein / kcal) * 100).toStringAsFixed(1) : '0.0';
+  final String ratio = kcal > 0 ? ((protein / kcal) * 400).toStringAsFixed(1) : '0.0';
 
   showModalBottomSheet(
     context: context,

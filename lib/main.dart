@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'food_api_service.dart';
 import 'helpers.dart'; 
 
 void main() async {
@@ -46,10 +49,11 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
   
-  // The three main pages
+  // The main pages
   final List<Widget> _pages = [
     const SearchPage(),
     const DiscoverPage(),
+    const FavoritesPage(),
     const CommunityPage(),
   ];
 
@@ -66,6 +70,7 @@ class _MainScreenState extends State<MainScreen> {
         destinations: const [
           NavigationDestination(icon: Icon(Icons.fitness_center), label: 'Products'),
           NavigationDestination(icon: Icon(Icons.explore), label: 'Discover'),
+          NavigationDestination(icon: Icon(Icons.favorite), label: 'Favorites'),
           NavigationDestination(icon: Icon(Icons.group), label: 'Community'),
         ],
       ),
@@ -82,9 +87,11 @@ class SearchPage extends StatefulWidget {
 
 class _SearchPageState extends State<SearchPage> {
   final _supabase = Supabase.instance.client;
+  final _foodApiService = FoodApiService();
+  Timer? _searchDebounce;
+  int _searchRequestId = 0;
   List<dynamic> _results = [];
   bool _loading = false;
-  bool _showOnlyFavorites = false; 
   String _sortBy = 'efficiency';
   final TextEditingController _searchController = TextEditingController();
   Set<String> _favoritedProductCodes = {};
@@ -93,7 +100,23 @@ class _SearchPageState extends State<SearchPage> {
   @override
   void initState() {
     super.initState();
-    _runSearch(); 
+    _runSearch(force: true);
+  }
+
+  @override
+  void dispose() {
+    _searchDebounce?.cancel();
+    _searchController.dispose();
+    _foodApiService.dispose();
+    super.dispose();
+  }
+
+  void _scheduleSearch() {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(
+      const Duration(milliseconds: 400),
+      () => _runSearch(),
+    );
   }
 
   Future<void> _toggleFavorite(String productCode) async {
@@ -115,8 +138,7 @@ class _SearchPageState extends State<SearchPage> {
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Added to favorites!")));
       }
       
-      // Always refresh if favorites filter is active
-      if (_showOnlyFavorites) _runSearch();
+      _runSearch();
     } catch (e) {
       debugPrint("🚨 FAVORITE TOGGLE ERROR: $e");
       if (mounted) {
@@ -142,7 +164,6 @@ class _SearchPageState extends State<SearchPage> {
             if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
               Navigator.pop(ctx);
               _searchController.text = barcodes.first.rawValue!;
-              setState(() => _showOnlyFavorites = false);
               _runSearch();
             }
           },
@@ -151,121 +172,104 @@ class _SearchPageState extends State<SearchPage> {
     );
   }
 
-  void _runSearch() async {
-  setState(() => _loading = true);
-  try {
-    final user = _supabase.auth.currentUser;
-    String searchText = _searchController.text.trim();
-    
-    // 1. FETCH CURRENT FAVORITES FROM DB
-    Set<String> favoritedCodes = {};
-    if (user != null) {
-      try {
-        final favRes = await _supabase
+  void _runSearch({bool force = false}) async {
+    final int requestId = ++_searchRequestId;
+    setState(() => _loading = true);
+    try {
+      final user = _supabase.auth.currentUser;
+      final String searchText = _searchController.text.trim();
+      final bool isBarcodeSearch = RegExp(r'^[0-9]+$').hasMatch(searchText);
+
+      if (!force && !isBarcodeSearch && searchText.length < 2) {
+        if (!mounted || requestId != _searchRequestId) return;
+        setState(() => _results = []);
+        return;
+      }
+
+      Set<String> favoriteCodes = {..._favoritedProductCodes};
+      if (user != null && (force || _favoritedProductCodes.isEmpty)) {
+        final favoritesRes = await _supabase
             .from('favorites')
             .select('product_code')
             .eq('user_id', user.id);
-        if (favRes is List) {
-          favoritedCodes = (favRes).map((e) => (e['product_code'] as String?) ?? '').where((code) => code.isNotEmpty).toSet();
+
+        favoriteCodes = (favoritesRes as List)
+            .map((row) => (row['product_code'] ?? '').toString())
+            .where((code) => code.isNotEmpty)
+            .toSet();
+      }
+
+      List<Map<String, dynamic>> apiResults = [];
+      if (searchText.isNotEmpty) {
+        apiResults = await _foodApiService.searchExternalProducts(searchText);
+      }
+
+      List<Map<String, dynamic>> fetchedData = apiResults
+          .map(
+            (product) => {
+              ...product,
+              'prices': <Map<String, dynamic>>[],
+              'isFavorite': favoriteCodes.contains((product['code'] ?? '').toString()),
+              'source': 'api',
+            },
+          )
+          .toList();
+
+      if (!mounted || requestId != _searchRequestId) return;
+
+      setState(() {
+        _favoritedProductCodes = favoriteCodes;
+
+        if (searchText.isNotEmpty && !isBarcodeSearch) {
+          final List<String> searchWords = searchText
+              .toLowerCase()
+              .split(' ')
+              .where((w) => w.isNotEmpty)
+              .toList();
+
+          _results = fetchedData.where((p) {
+            final String combinedText =
+                '${p['name'] ?? ''} ${p['brand'] ?? ''}'.toLowerCase();
+            return searchWords.every((word) => combinedText.contains(word));
+          }).toList();
+        } else {
+          _results = fetchedData;
         }
-      } catch (e) {
-        debugPrint("🚨 ERROR FETCHING FAVORITES: $e");
-      }
-    }
 
-    // 2. DETERMINE JOIN (Prices)
-    String priceSelect = _sortBy == 'price' ? 'prices!inner(*)' : 'prices(*)';
-
-    // 3. START BASE QUERY
-    dynamic query = _supabase.from('products').select('*, $priceSelect');
-
-    // 4. FILTER: Favorites
-    if (_showOnlyFavorites) {
-      if (favoritedCodes.isNotEmpty) {
-        query = query.inFilter('code', favoritedCodes.toList());
-      } else {
-        setState(() {
-          _results = [];
-          _favoritedProductCodes = {};
-          _loading = false;
-        });
-        return; 
-      }
-    }
-
-    // 5. FILTER: Search term
-    if (searchText.isNotEmpty) {
-      if (RegExp(r'^[0-9]+$').hasMatch(searchText)) {
-        query = query.eq('code', searchText);
-      } else {
-        List<String> words = searchText.split(' ').where((w) => w.length > 1).toList();
-        if (words.isNotEmpty) {
-          List<String> orConditions = [];
-          for (var word in words) {
-            orConditions.add('name.ilike.%$word%');
-            orConditions.add('brand.ilike.%$word%');
-          }
-          query = query.or(orConditions.join(','));
+        if (_maxPricePerGram != null) {
+          _results = _results.where((p) {
+            final double pricePerGram = _getMinPricePerGram(p);
+            return pricePerGram > 0 && pricePerGram <= _maxPricePerGram!;
+          }).toList();
         }
+
+        if (_sortBy == 'efficiency') {
+          _results.sort((a, b) {
+            final double ratioA = (a['kcal'] ?? 0) > 0 ? (a['p'] ?? 0) / a['kcal'] : 0;
+            final double ratioB = (b['kcal'] ?? 0) > 0 ? (b['p'] ?? 0) / b['kcal'] : 0;
+            return ratioB.compareTo(ratioA);
+          });
+        } else if (_sortBy == 'price') {
+          _results.sort((a, b) => _getMinPricePerGram(a).compareTo(_getMinPricePerGram(b)));
+        } else if (_sortBy == 'name') {
+          _results.sort(
+            (a, b) =>
+                (a['name'] ?? '').toString().toLowerCase().compareTo((b['name'] ?? '').toString().toLowerCase()),
+          );
+        } else if (_sortBy == 'protein') {
+          _results.sort(
+            (a, b) => ((b['p'] as num?) ?? 0).compareTo((a['p'] as num?) ?? 0),
+          );
+        }
+      });
+    } catch (e) {
+      debugPrint("🚨 SEARCH CRITICAL ERROR: $e");
+    } finally {
+      if (mounted && requestId == _searchRequestId) {
+        setState(() => _loading = false);
       }
     }
-
-    // 6. SERVER-SIDE SORTING
-    if (_sortBy == 'protein') {
-      query = query.order('p', ascending: false);
-    } else if (_sortBy == 'name') {
-      query = query.order('name', ascending: true);
-    }
-    
-    // 7. FETCH DATA (reduced limit to avoid timeouts)
-    final res = await query.limit(200);
-    List<dynamic> fetchedData = res as List<dynamic>;
-
-    // 8. CLIENT-SIDE REFINEMENT
-    setState(() {
-      if (_showOnlyFavorites) {
-        fetchedData = fetchedData.where((p) => favoritedCodes.contains(p['code'])).toList();
-      }
-
-      // Refine text search: ALL words must be present
-      if (searchText.isNotEmpty && !RegExp(r'^[0-9]+$').hasMatch(searchText)) {
-        List<String> searchWords = searchText.toLowerCase().split(' ').where((w) => w.isNotEmpty).toList();
-        _results = fetchedData.where((p) {
-          String combinedText = '${p['name'] ?? ''} ${p['brand'] ?? ''}'.toLowerCase();
-          return searchWords.every((word) => combinedText.contains(word));
-        }).toList();
-      } else {
-        _results = fetchedData;
-      }
-
-      // Filter by price/g if set
-      if (_maxPricePerGram != null) {
-        _results = _results.where((p) {
-          double pricePerGram = _getMinPricePerGram(p);
-          return pricePerGram > 0 && pricePerGram <= _maxPricePerGram!;
-        }).toList();
-      }
-
-      // 9. LOCAL SORTING
-      if (_sortBy == 'efficiency') {
-        _results.sort((a, b) {
-          double ratioA = (a['kcal'] ?? 0) > 0 ? (a['p'] ?? 0) / a['kcal'] : 0;
-          double ratioB = (b['kcal'] ?? 0) > 0 ? (b['p'] ?? 0) / b['kcal'] : 0;
-          return ratioB.compareTo(ratioA);
-        });
-      } else if (_sortBy == 'price') {
-        _results.sort((a, b) => _getMinPricePerGram(a).compareTo(_getMinPricePerGram(b)));
-      }
-
-      // Sync favorites
-      _favoritedProductCodes = favoritedCodes;
-    });
-  } catch (e) {
-    debugPrint("🚨 SEARCH CRITICAL ERROR: $e");
-  } finally {
-    setState(() => _loading = false);
   }
-}
 
   double _getMinPricePerGram(Map product) => getMinPricePerGram(product);
 
@@ -380,20 +384,13 @@ class _SearchPageState extends State<SearchPage> {
               suffixIcon: IconButton(icon: const Icon(Icons.qr_code_scanner), onPressed: _openScanner),
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(20)),
             ),
-            onChanged: (_) => _runSearch(),
+            onChanged: (_) => _scheduleSearch(),
           ),
         ),
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.only(left: 12),
           child: Row(children: [
-            FilterChip(
-              label: const Text("❤️ Favorites"),
-              selected: _showOnlyFavorites,
-              onSelected: (v) => setState(() { _showOnlyFavorites = v; _runSearch(); }),
-              selectedColor: Colors.red[100],
-            ),
-            const SizedBox(width: 8),
             FilterChip(
               label: Text(_maxPricePerGram == null ? "Max €/g" : "≤€${_maxPricePerGram!.toStringAsFixed(2)}/g"),
               selected: _maxPricePerGram != null,
@@ -467,7 +464,7 @@ Expanded(
           itemCount: _results.length,
           itemBuilder: (c, i) {
             final p = _results[i];
-            double score = p['kcal'] > 0 ? (p['p'] / p['kcal']) * 100 : 0;
+            double score = p['kcal'] > 0 ? (p['p'] / p['kcal']) * 400 : 0;
             
             // Calculate freshest price info
             List prices = p['prices'] ?? [];
@@ -504,7 +501,29 @@ Expanded(
                 subtitle: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text("${p['brand']} • ${(p['p'] as num).toStringAsFixed(1)}g protein"),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text("${p['brand']} • ${(p['p'] as num).toStringAsFixed(1)}g protein"),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: (p['source'] == 'supabase') ? Colors.green[100] : Colors.blue[100],
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            (p['source'] == 'supabase') ? 'Supabase' : 'OFF',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: (p['source'] == 'supabase') ? Colors.green[800] : Colors.blue[800],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                     if (freshestPriceInfo != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
@@ -541,6 +560,143 @@ Expanded(
         ),
 ),  
       ]),
+    );
+  }
+}
+
+class FavoritesPage extends StatefulWidget {
+  const FavoritesPage({super.key});
+
+  @override
+  State<FavoritesPage> createState() => _FavoritesPageState();
+}
+
+class _FavoritesPageState extends State<FavoritesPage> {
+  final _supabase = Supabase.instance.client;
+  List<dynamic> _products = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFavorites();
+  }
+
+  Future<void> _loadFavorites() async {
+    setState(() => _loading = true);
+    try {
+      final user = _supabase.auth.currentUser;
+      if (user == null) {
+        setState(() => _products = []);
+        return;
+      }
+
+      final res = await _supabase
+          .from('favorites')
+          .select('products (*, prices(*))')
+          .eq('user_id', user.id);
+
+      setState(() {
+        _products = (res as List)
+            .map((row) => row['products'])
+            .where((product) => product != null)
+            .toList();
+      });
+    } catch (e) {
+      debugPrint('Favorites load error: $e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _removeFavorite(String code) async {
+    final user = _supabase.auth.currentUser;
+    if (user == null) return;
+
+    await _supabase
+        .from('favorites')
+        .delete()
+        .match({'user_id': user.id, 'product_code': code});
+
+    _loadFavorites();
+  }
+
+  void _showPriceDialog(Map<String, dynamic> product) {
+    showPriceDialog(
+      context,
+      product,
+      _supabase,
+      (code, price, store, weight) => submitPrice(
+        context,
+        _supabase,
+        code,
+        price,
+        store,
+        weight,
+        _loadFavorites,
+      ),
+    );
+  }
+
+  void _showDetails(Map<String, dynamic> product) {
+    showDetailsBottomSheet(
+      context,
+      product,
+      _supabase,
+      _showPriceDialog,
+    );
+  }
+
+  Widget _buildScoreCircle(double score) => buildScoreCircle(score);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Favorites'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _loadFavorites,
+          ),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _products.isEmpty
+              ? const Center(child: Text('No favorites yet.'))
+              : ListView.builder(
+                  itemCount: _products.length,
+                  itemBuilder: (context, index) {
+                    final p = _products[index] as Map<String, dynamic>;
+                    final double score =
+                        (p['kcal'] ?? 0) > 0 ? (p['p'] / p['kcal']) * 400 : 0;
+
+                    return Card(
+                      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      child: ListTile(
+                        title: Text(
+                          (p['name'] ?? '').toString(),
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        subtitle: Text(
+                          '${p['brand'] ?? ''} • ${((p['p'] as num?) ?? 0).toStringAsFixed(1)}g protein',
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.favorite, color: Colors.red),
+                              onPressed: () => _removeFavorite((p['code'] ?? '').toString()),
+                            ),
+                            _buildScoreCircle(score),
+                          ],
+                        ),
+                        onTap: () => _showDetails(p),
+                      ),
+                    );
+                  },
+                ),
     );
   }
 }
@@ -626,7 +782,7 @@ class _DiscoverPageState extends State<DiscoverPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Discover 🔥"),
+        title: const Text("Discover"),
         actions: [
           IconButton(
             icon: const Icon(Icons.person_outline),
@@ -661,7 +817,7 @@ class _DiscoverPageState extends State<DiscoverPage> {
                     final item = _popularProducts[index];
                     final product = item['product'];
                     final favoriteCount = item['favorite_count'];
-                    double score = product['kcal'] > 0 ? (product['p'] / product['kcal']) * 100 : 0;
+                    double score = product['kcal'] > 0 ? (product['p'] / product['kcal']) * 400 : 0;
 
                     // Calculate freshest price info
                     List prices = product['prices'] ?? [];
@@ -727,7 +883,7 @@ class _DiscoverPageState extends State<DiscoverPage> {
                             Padding(
                               padding: const EdgeInsets.only(top: 4),
                               child: Text(
-                                "❤️ $favoriteCount ${favoriteCount == 1 ? 'person' : 'people'} love${favoriteCount == 1 ? 's' : ''} this",
+                                "$favoriteCount ${favoriteCount == 1 ? 'person' : 'people'} ${favoriteCount == 1 ? 'likes' : 'like'} this",
                                 style: TextStyle(
                                   color: Colors.red[400],
                                   fontSize: 12,
@@ -779,16 +935,13 @@ class _CommunityPageState extends State<CommunityPage> {
     }
 
     final res = await query.limit(20);
-    
-    // Voor elke gebruiker de score ophalen via een RPC call
-    List<Map<String, dynamic>> enrichedUsers = [];
-    for (var user in res) {
-      final score = await _supabase.rpc('get_contribution_score', params: {'target_user_id': user['id']});
-      enrichedUsers.add({
-        ...user,
-        'score': score,
-      });
-    }
+
+    final enrichedUsers = (res as List)
+        .map((user) => {
+              ...(user as Map),
+              'score': 0,
+            })
+        .toList();
 
     setState(() => _users = enrichedUsers);
   } catch (e) { debugPrint("Community error: $e"); }
@@ -806,7 +959,7 @@ class _CommunityPageState extends State<CommunityPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Find users 👥"),
+        title: const Text("Find users"),
         actions: [
           IconButton(
             icon: const Icon(Icons.person_outline),
@@ -973,7 +1126,7 @@ class _UserFavoritesPageState extends State<UserFavoritesPage> {
               itemCount: _products.length,
               itemBuilder: (context, index) {
                 final p = _products[index];
-                double score = p['kcal'] > 0 ? (p['p'] / p['kcal']) * 100 : 0;
+                double score = p['kcal'] > 0 ? (p['p'] / p['kcal']) * 400 : 0;
                 
                 // Calculate freshest price info
                 List prices = p['prices'] ?? [];
@@ -1107,8 +1260,13 @@ class _LoginPageState extends State<LoginPage> {
 // --- NEW: PAGE TO ADD PRODUCTS ---
 class AddProductPage extends StatefulWidget {
   final String? initialCode; // The barcode we already scanned
+  final Map<String, dynamic>? initialProductData;
 
-  const AddProductPage({super.key, this.initialCode});
+  const AddProductPage({
+    super.key,
+    this.initialCode,
+    this.initialProductData,
+  });
 
   @override
   State<AddProductPage> createState() => _AddProductPageState();
@@ -1129,6 +1287,20 @@ class _AddProductPageState extends State<AddProductPage> {
     if (widget.initialCode != null) {
       _codeController.text = widget.initialCode!;
     }
+
+    final productData = widget.initialProductData;
+    if (productData != null) {
+      _nameController.text = (productData['name'] ?? '').toString();
+      _brandController.text = (productData['brand'] ?? '').toString();
+      _pController.text = _numToText(productData['p']);
+      _kcalController.text = _numToText(productData['kcal']);
+    }
+  }
+
+  String _numToText(dynamic value) {
+    if (value == null) return '';
+    if (value is num) return value.toString();
+    return value.toString();
   }
 
   Future<void> _saveProduct() async {
@@ -1168,7 +1340,7 @@ class _AddProductPageState extends State<AddProductPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("New Product 🆕")),
+      appBar: AppBar(title: const Text("New Product")),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Form(
@@ -1292,7 +1464,7 @@ class _ProfilePageState extends State<ProfilePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("My Profile 👤")),
+      appBar: AppBar(title: const Text("My Profile")),
       body: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
