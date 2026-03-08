@@ -44,10 +44,13 @@ class FoodApiService {
       'brand': (product['brands'] ?? '').toString(),
       'p': _toNum(nutriments['proteins_100g']) ?? 0,
       'kcal': _toNum(nutriments['energy-kcal_100g']) ?? 0,
+      'code': cleanedBarcode,
     };
   }
 
-  Future<List<Map<String, dynamic>>> searchExternalProducts(String query) async {
+  Future<List<Map<String, dynamic>>> searchExternalProducts(
+    String query,
+  ) async {
     final cleanedQuery = query.trim();
     if (cleanedQuery.isEmpty) return [];
 
@@ -74,28 +77,21 @@ class FoodApiService {
     final rawProducts = decoded['products'];
     if (rawProducts is! List) return [];
 
-    final results = rawProducts
-        .whereType<Map>()
-        .map((raw) {
-          final product = Map<String, dynamic>.from(raw);
-          final nutrimentsData = product['nutriments'];
-          final nutriments = nutrimentsData is Map
-              ? Map<String, dynamic>.from(nutrimentsData)
-              : <String, dynamic>{};
+    final results = rawProducts.whereType<Map>().map((raw) {
+      final product = Map<String, dynamic>.from(raw);
+      final nutrimentsData = product['nutriments'];
+      final nutriments = nutrimentsData is Map
+          ? Map<String, dynamic>.from(nutrimentsData)
+          : <String, dynamic>{};
 
-          return <String, dynamic>{
-            'name': (product['product_name'] ?? '').toString(),
-            'brand': (product['brands'] ?? '').toString(),
-            'p': _toNum(nutriments['proteins_100g']) ?? 0,
-            'kcal': _toNum(nutriments['energy-kcal_100g']) ?? 0,
-            'code': (product['code'] ?? '').toString(),
-          };
-        })
-        .toList();
-
-    results.sort(
-      (a, b) => ((b['p'] as num?) ?? 0).compareTo((a['p'] as num?) ?? 0),
-    );
+      return <String, dynamic>{
+        'name': (product['product_name'] ?? '').toString(),
+        'brand': (product['brands'] ?? '').toString(),
+        'p': _toNum(nutriments['proteins_100g']) ?? 0,
+        'kcal': _toNum(nutriments['energy-kcal_100g']) ?? 0,
+        'code': (product['code'] ?? '').toString(),
+      };
+    }).toList();
 
     return results;
   }

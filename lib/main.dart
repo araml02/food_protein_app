@@ -96,9 +96,10 @@ class _SearchPageState extends State<SearchPage> {
   final _foodApiService = FoodApiService();
   Timer? _searchDebounce;
   int _searchRequestId = 0;
+  List<Map<String, dynamic>> _fetchedData = [];
   List<dynamic> _results = [];
   bool _loading = false;
-  String _sortBy = 'efficiency';
+  String? _sortBy;
   final TextEditingController _searchController = TextEditingController();
   Set<String> _favoritedProductCodes = {};
   double? _maxPricePerGram; // null = no filter
@@ -198,7 +199,10 @@ class _SearchPageState extends State<SearchPage> {
 
       if (!force && !isBarcodeSearch && searchText.length < 2) {
         if (!mounted || requestId != _searchRequestId) return;
-        setState(() => _results = []);
+        setState(() {
+          _fetchedData = [];
+          _results = [];
+        });
         return;
       }
 
@@ -217,7 +221,27 @@ class _SearchPageState extends State<SearchPage> {
 
       List<Map<String, dynamic>> apiResults = [];
       if (searchText.isNotEmpty) {
-        apiResults = await _foodApiService.searchExternalProducts(searchText);
+        if (isBarcodeSearch) {
+          final product = await _foodApiService.fetchProductFromOFF(searchText);
+          if (product != null) {
+            apiResults = [
+              {
+                ...product,
+                // Ensure scanned/typed barcode is available for favorites/details.
+                'code': (product['code'] ?? '').toString().isNotEmpty
+                    ? product['code']
+                    : searchText,
+              },
+            ];
+          } else {
+            // Fallback for barcodes not found by exact endpoint.
+            apiResults = await _foodApiService.searchExternalProducts(
+              searchText,
+            );
+          }
+        } else {
+          apiResults = await _foodApiService.searchExternalProducts(searchText);
+        }
       }
 
       List<Map<String, dynamic>> fetchedData = apiResults
@@ -237,55 +261,12 @@ class _SearchPageState extends State<SearchPage> {
 
       setState(() {
         _favoritedProductCodes = favoriteCodes;
-
-        if (searchText.isNotEmpty && !isBarcodeSearch) {
-          final List<String> searchWords = searchText
-              .toLowerCase()
-              .split(' ')
-              .where((w) => w.isNotEmpty)
-              .toList();
-
-          _results = fetchedData.where((p) {
-            final String combinedText = '${p['name'] ?? ''} ${p['brand'] ?? ''}'
-                .toLowerCase();
-            return searchWords.every((word) => combinedText.contains(word));
-          }).toList();
-        } else {
-          _results = fetchedData;
-        }
-
-        if (_maxPricePerGram != null) {
-          _results = _results.where((p) {
-            final double pricePerGram = _getMinPricePerGram(p);
-            return pricePerGram > 0 && pricePerGram <= _maxPricePerGram!;
-          }).toList();
-        }
-
-        if (_sortBy == 'efficiency') {
-          _results.sort((a, b) {
-            final double ratioA = (a['kcal'] ?? 0) > 0
-                ? (a['p'] ?? 0) / a['kcal']
-                : 0;
-            final double ratioB = (b['kcal'] ?? 0) > 0
-                ? (b['p'] ?? 0) / b['kcal']
-                : 0;
-            return ratioB.compareTo(ratioA);
-          });
-        } else if (_sortBy == 'price') {
-          _results.sort(
-            (a, b) => _getMinPricePerGram(a).compareTo(_getMinPricePerGram(b)),
-          );
-        } else if (_sortBy == 'name') {
-          _results.sort(
-            (a, b) => (a['name'] ?? '').toString().toLowerCase().compareTo(
-              (b['name'] ?? '').toString().toLowerCase(),
-            ),
-          );
-        } else if (_sortBy == 'protein') {
-          _results.sort(
-            (a, b) => ((b['p'] as num?) ?? 0).compareTo((a['p'] as num?) ?? 0),
-          );
-        }
+        _fetchedData = fetchedData;
+        _results = _buildVisibleResults(
+          source: _fetchedData,
+          searchText: searchText,
+          isBarcodeSearch: isBarcodeSearch,
+        );
       });
     } catch (e) {
       debugPrint("🚨 SEARCH CRITICAL ERROR: $e");
@@ -294,6 +275,77 @@ class _SearchPageState extends State<SearchPage> {
         setState(() => _loading = false);
       }
     }
+  }
+
+  List<Map<String, dynamic>> _buildVisibleResults({
+    required List<Map<String, dynamic>> source,
+    required String searchText,
+    required bool isBarcodeSearch,
+  }) {
+    List<Map<String, dynamic>> visible = List<Map<String, dynamic>>.from(
+      source,
+    );
+
+    if (searchText.isNotEmpty && !isBarcodeSearch) {
+      final List<String> searchWords = searchText
+          .toLowerCase()
+          .split(' ')
+          .where((w) => w.isNotEmpty)
+          .toList();
+
+      visible = visible.where((p) {
+        final String combinedText = '${p['name'] ?? ''} ${p['brand'] ?? ''}'
+            .toLowerCase();
+        return searchWords.every((word) => combinedText.contains(word));
+      }).toList();
+    }
+
+    if (_maxPricePerGram != null) {
+      visible = visible.where((p) {
+        final double pricePerGram = _getMinPricePerGram(p);
+        return pricePerGram > 0 && pricePerGram <= _maxPricePerGram!;
+      }).toList();
+    }
+
+    if (_sortBy == 'efficiency') {
+      visible.sort((a, b) {
+        final double ratioA = (a['kcal'] ?? 0) > 0
+            ? (a['p'] ?? 0) / a['kcal']
+            : 0;
+        final double ratioB = (b['kcal'] ?? 0) > 0
+            ? (b['p'] ?? 0) / b['kcal']
+            : 0;
+        return ratioB.compareTo(ratioA);
+      });
+    } else if (_sortBy == 'price') {
+      visible.sort(
+        (a, b) => _getMinPricePerGram(a).compareTo(_getMinPricePerGram(b)),
+      );
+    } else if (_sortBy == 'name') {
+      visible.sort(
+        (a, b) => (a['name'] ?? '').toString().toLowerCase().compareTo(
+          (b['name'] ?? '').toString().toLowerCase(),
+        ),
+      );
+    } else if (_sortBy == 'protein') {
+      visible.sort(
+        (a, b) => ((b['p'] as num?) ?? 0).compareTo((a['p'] as num?) ?? 0),
+      );
+    }
+
+    return visible;
+  }
+
+  void _applyCurrentFiltersAndSort() {
+    final String searchText = _searchController.text.trim();
+    final bool isBarcodeSearch = RegExp(r'^[0-9]+$').hasMatch(searchText);
+    setState(() {
+      _results = _buildVisibleResults(
+        source: _fetchedData,
+        searchText: searchText,
+        isBarcodeSearch: isBarcodeSearch,
+      );
+    });
   }
 
   double _getMinPricePerGram(Map product) => getMinPricePerGram(product);
@@ -365,10 +417,8 @@ class _SearchPageState extends State<SearchPage> {
             onPressed: () {
               final valueInCents = double.tryParse(controller.text);
               if (valueInCents != null && valueInCents > 0) {
-                setState(() {
-                  _maxPricePerGram = valueInCents / 100;
-                  _runSearch();
-                });
+                _maxPricePerGram = valueInCents / 100;
+                _applyCurrentFiltersAndSort();
                 Navigator.pop(ctx);
               } else {
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -439,10 +489,8 @@ class _SearchPageState extends State<SearchPage> {
                     if (v) {
                       _showPricePerGramDialog();
                     } else {
-                      setState(() {
-                        _maxPricePerGram = null;
-                        _runSearch();
-                      });
+                      _maxPricePerGram = null;
+                      _applyCurrentFiltersAndSort();
                     }
                   },
                   selectedColor: Colors.green[100],
@@ -452,11 +500,8 @@ class _SearchPageState extends State<SearchPage> {
                   label: const Text("Ratio"),
                   selected: _sortBy == 'efficiency',
                   onSelected: (s) {
-                    if (s)
-                      setState(() {
-                        _sortBy = 'efficiency';
-                        _runSearch();
-                      });
+                    _sortBy = s ? 'efficiency' : null;
+                    _applyCurrentFiltersAndSort();
                   },
                 ),
                 const SizedBox(width: 8),
@@ -464,11 +509,8 @@ class _SearchPageState extends State<SearchPage> {
                   label: const Text("Protein"),
                   selected: _sortBy == 'protein',
                   onSelected: (s) {
-                    if (s)
-                      setState(() {
-                        _sortBy = 'protein';
-                        _runSearch();
-                      });
+                    _sortBy = s ? 'protein' : null;
+                    _applyCurrentFiltersAndSort();
                   },
                 ),
                 const SizedBox(width: 8),
@@ -476,11 +518,8 @@ class _SearchPageState extends State<SearchPage> {
                   label: const Text("Price/g"),
                   selected: _sortBy == 'price',
                   onSelected: (s) {
-                    if (s)
-                      setState(() {
-                        _sortBy = 'price';
-                        _runSearch();
-                      });
+                    _sortBy = s ? 'price' : null;
+                    _applyCurrentFiltersAndSort();
                   },
                 ),
               ],

@@ -7,21 +7,15 @@ double getMinPricePerGram(Map product) {
   List prices = product['prices'] ?? [];
   double proteinPer100 = (product['p'] ?? 0).toDouble();
 
-  // DEBUG: Laat zien wat we ontvangen
-  debugPrint('🔍 DEBUG getMinPricePerGram - Prices data: ${prices.length} prices found');
-  if (prices.isNotEmpty) {
-    debugPrint('   First price: ${prices.first}');
-  }
-
   double minVal = double.infinity;
   for (var pr in prices) {
     double p = (pr['price'] ?? 0).toDouble();
     if (p <= 0) continue;
-    
+
     // BELANGRIJK: Probeer pack_weight_grams op te halen
     // Dit kan een int, double, of string zijn
     double w = 100; // default fallback
-    
+
     if (pr['pack_weight_grams'] != null) {
       if (pr['pack_weight_grams'] is String) {
         w = double.tryParse(pr['pack_weight_grams']) ?? 100;
@@ -29,24 +23,25 @@ double getMinPricePerGram(Map product) {
         w = (pr['pack_weight_grams'] as num).toDouble();
       }
     }
-    
-    debugPrint('   Price: €$p, Weight: ${w}g, Protein%: $proteinPer100/100');
-    
+
     if (proteinPer100 <= 0 || w <= 0) continue;
-    
+
     double totalP = (proteinPer100 / 100) * w;
     double pricePerGram = totalP > 0 ? p / totalP : 0;
-    debugPrint('   → Total protein: ${totalP}g, PricePerGram: €$pricePerGram');
     if (pricePerGram < minVal) minVal = pricePerGram;
   }
-  debugPrint('   Final minVal: €$minVal\n');
   return minVal == double.infinity ? 0 : minVal;
 }
 
-Widget buildStat(String val, String lab, Color col) => Column(children: [
-  Text(val, style: TextStyle(color: col, fontSize: 22, fontWeight: FontWeight.bold)),
-  Text(lab, style: const TextStyle(fontWeight: FontWeight.w500))
-]);
+Widget buildStat(String val, String lab, Color col) => Column(
+  children: [
+    Text(
+      val,
+      style: TextStyle(color: col, fontSize: 22, fontWeight: FontWeight.bold),
+    ),
+    Text(lab, style: const TextStyle(fontWeight: FontWeight.w500)),
+  ],
+);
 
 Widget buildScoreCircle(double score) {
   Color scoreColor;
@@ -57,9 +52,9 @@ Widget buildScoreCircle(double score) {
   } else {
     scoreColor = Colors.green;
   }
-  
+
   double progress = (score / 100).clamp(0, 1);
-  
+
   return SizedBox(
     width: 60,
     height: 60,
@@ -76,7 +71,11 @@ Widget buildScoreCircle(double score) {
         ),
         Text(
           score.toStringAsFixed(1),
-          style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: scoreColor),
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.bold,
+            color: scoreColor,
+          ),
         ),
       ],
     ),
@@ -113,12 +112,12 @@ void showPriceDialog(
   Function(String, double, String, double) onSubmit,
 ) {
   final priceCont = TextEditingController();
-  String initialWeight = prod['default_weight'] != null 
-      ? prod['default_weight'].toString() 
+  String initialWeight = prod['default_weight'] != null
+      ? prod['default_weight'].toString()
       : "500";
   final weightCont = TextEditingController(text: initialWeight);
   String store = "Albert Heijn";
-  
+
   showDialog(
     context: context,
     builder: (ctx) => AlertDialog(
@@ -128,21 +127,32 @@ void showPriceDialog(
         children: [
           TextField(
             controller: priceCont,
-            decoration: const InputDecoration(labelText: "Price (€)", hintText: "e.g. 1.50"),
+            decoration: const InputDecoration(
+              labelText: "Price (€)",
+              hintText: "e.g. 1.50",
+            ),
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
           ),
           const SizedBox(height: 10),
           TextField(
             controller: weightCont,
-            decoration: const InputDecoration(labelText: "Package weight (grams)", hintText: "e.g. 500"),
+            decoration: const InputDecoration(
+              labelText: "Package weight (grams)",
+              hintText: "e.g. 500",
+            ),
             keyboardType: TextInputType.number,
           ),
           const SizedBox(height: 10),
           DropdownButtonFormField<String>(
             value: store,
-            items: ["Albert Heijn", "Jumbo", "Delhaize", "Aldi", "Lidl", "Colruyt"]
-                .map((s) => DropdownMenuItem(value: s, child: Text(s)))
-                .toList(),
+            items: [
+              "Albert Heijn",
+              "Jumbo",
+              "Delhaize",
+              "Aldi",
+              "Lidl",
+              "Colruyt",
+            ].map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
             onChanged: (v) => store = v!,
             decoration: const InputDecoration(labelText: "Store"),
           ),
@@ -178,7 +188,9 @@ void showDetailsBottomSheet(
   List prices = prod['prices'] ?? [];
   final num kcal = (prod['kcal'] ?? 0) as num;
   final num protein = (prod['p'] ?? 0) as num;
-  final String ratio = kcal > 0 ? ((protein / kcal) * 400).toStringAsFixed(1) : '0.0';
+  final String ratio = kcal > 0
+      ? ((protein / kcal) * 400).toStringAsFixed(1)
+      : '0.0';
 
   showModalBottomSheet(
     context: context,
@@ -204,11 +216,19 @@ void showDetailsBottomSheet(
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              buildStat("${protein.toStringAsFixed(1)}g", "Protein", Colors.green),
+              buildStat(
+                "${protein.toStringAsFixed(1)}g",
+                "Protein",
+                Colors.green,
+              ),
               buildStat("${kcal.toStringAsFixed(1)}", "Kcal", Colors.blue),
               buildStat(ratio, "Ratio", Colors.purple),
               // NIEUW: Toon standaard gewicht
-              buildStat("${prod['default_weight'] ?? '?'}g", "Weight", Colors.orange),
+              buildStat(
+                "${prod['default_weight'] ?? '?'}g",
+                "Weight",
+                Colors.orange,
+              ),
             ],
           ),
           const Divider(height: 40),
@@ -225,12 +245,13 @@ void showDetailsBottomSheet(
           ...prices.map((pr) {
             final DateTime updatedAt = DateTime.parse(pr['created_at']);
             final int daysAgo = DateTime.now().difference(updatedAt).inDays;
-            
+
             Color statusColor = daysAgo <= 7
                 ? Colors.green
                 : (daysAgo <= 30 ? Colors.orange : Colors.red);
-            String statusText =
-                daysAgo == 0 ? "Verified today" : "Verified $daysAgo days ago";
+            String statusText = daysAgo == 0
+                ? "Verified today"
+                : "Verified $daysAgo days ago";
 
             return Container(
               margin: const EdgeInsets.only(bottom: 12),
@@ -241,18 +262,27 @@ void showDetailsBottomSheet(
                 border: Border.all(color: Colors.grey[200]!),
               ),
               child: ListTile(
-                leading: Icon(Icons.history, color: statusColor.withOpacity(0.6)),
+                leading: Icon(
+                  Icons.history,
+                  color: statusColor.withOpacity(0.6),
+                ),
                 title: Text(
                   "${pr['store_name']} (${pr['pack_weight_grams'] ?? 100}g)",
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
-                subtitle: Text(statusText, style: TextStyle(color: statusColor, fontSize: 12)),
+                subtitle: Text(
+                  statusText,
+                  style: TextStyle(color: statusColor, fontSize: 12),
+                ),
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
                       "€${pr['price'].toStringAsFixed(2)}",
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                      ),
                     ),
                     const SizedBox(width: 8),
                     IconButton(
@@ -260,11 +290,15 @@ void showDetailsBottomSheet(
                       onPressed: () async {
                         await supabase
                             .from('prices')
-                            .update({'created_at': DateTime.now().toIso8601String()})
+                            .update({
+                              'created_at': DateTime.now().toIso8601String(),
+                            })
                             .eq('id', pr['id']);
                         if (ctx.mounted) Navigator.pop(ctx);
                         ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text("Thanks for verifying!")),
+                          const SnackBar(
+                            content: Text("Thanks for verifying!"),
+                          ),
                         );
                       },
                     ),
@@ -285,7 +319,9 @@ void showDetailsBottomSheet(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.green,
                   foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                 ),
               ),
             ),
