@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'food_api_service.dart';
 import 'helpers.dart';
+import 'recipes_page.dart';
 
 String formatPricePerGramInCents(double pricePerGramEuro) {
   final pricePerGramCents = pricePerGramEuro * 100;
@@ -60,6 +61,7 @@ class _MainScreenState extends State<MainScreen> {
     const SearchPage(),
     const DiscoverPage(),
     const FavoritesPage(),
+    const RecipesPage(),
     const CommunityPage(),
   ];
 
@@ -77,6 +79,10 @@ class _MainScreenState extends State<MainScreen> {
           ),
           NavigationDestination(icon: Icon(Icons.explore), label: 'Discover'),
           NavigationDestination(icon: Icon(Icons.favorite), label: 'Favorites'),
+          NavigationDestination(
+            icon: Icon(Icons.restaurant_menu),
+            label: 'Recipes',
+          ),
           NavigationDestination(icon: Icon(Icons.group), label: 'Community'),
         ],
       ),
