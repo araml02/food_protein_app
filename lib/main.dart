@@ -62,7 +62,6 @@ class _MainScreenState extends State<MainScreen> {
     const DiscoverPage(),
     const FavoritesPage(),
     const RecipesPage(),
-    const CommunityPage(),
   ];
 
   @override
@@ -83,7 +82,6 @@ class _MainScreenState extends State<MainScreen> {
             icon: Icon(Icons.restaurant_menu),
             label: 'Recipes',
           ),
-          NavigationDestination(icon: Icon(Icons.group), label: 'Community'),
         ],
       ),
     );
@@ -103,8 +101,10 @@ class _SearchPageState extends State<SearchPage> {
   Timer? _searchDebounce;
   int _searchRequestId = 0;
   List<Map<String, dynamic>> _fetchedData = [];
+  List<Map<String, dynamic>> _userResults = [];
   List<dynamic> _results = [];
   bool _loading = false;
+  bool _showUserFilter = false;
   String? _sortBy;
   final TextEditingController _searchController = TextEditingController();
   Set<String> _favoritedProductCodes = {};
@@ -132,9 +132,37 @@ class _SearchPageState extends State<SearchPage> {
     );
   }
 
-  Future<void> _toggleFavorite(String productCode) async {
+  double _toDouble(dynamic value) {
+    if (value == null) return 0;
+    if (value is num) return value.toDouble();
+    if (value is String)
+      return double.tryParse(value.replaceAll(',', '.')) ?? 0;
+    return 0;
+  }
+
+  Future<void> _upsertProductForFavorite(Map<String, dynamic> product) async {
+    final String code = (product['code'] ?? '').toString().trim();
+    if (code.isEmpty) {
+      throw Exception('Product has no code.');
+    }
+
+    await _supabase.from('products').upsert({
+      'code': code,
+      'name': (product['name'] ?? '').toString(),
+      'brand': (product['brand'] ?? '').toString(),
+      'p': _toDouble(product['p']),
+      'kcal': _toDouble(product['kcal']),
+      'c': _toDouble(product['c']),
+      'f': _toDouble(product['f']),
+    }, onConflict: 'code');
+  }
+
+  Future<void> _toggleFavorite(Map<String, dynamic> product) async {
     final user = _supabase.auth.currentUser;
     if (user == null) return;
+
+    final String productCode = (product['code'] ?? '').toString().trim();
+    if (productCode.isEmpty) return;
 
     final isCurrentlyFavorited = _favoritedProductCodes.contains(productCode);
 
@@ -151,6 +179,9 @@ class _SearchPageState extends State<SearchPage> {
             const SnackBar(content: Text("Removed from favorites")),
           );
       } else {
+        // Ensure product exists in Supabase before linking it as favorite.
+        await _upsertProductForFavorite(product);
+
         // Add to favorites
         await _supabase.from('favorites').insert({
           'user_id': user.id,
@@ -203,11 +234,44 @@ class _SearchPageState extends State<SearchPage> {
       final String searchText = _searchController.text.trim();
       final bool isBarcodeSearch = RegExp(r'^[0-9]+$').hasMatch(searchText);
 
-      if (!force && !isBarcodeSearch && searchText.length < 2) {
+      if (!_showUserFilter &&
+          !force &&
+          !isBarcodeSearch &&
+          searchText.length < 2) {
+        if (!mounted || requestId != _searchRequestId) return;
+        setState(() {
+          _fetchedData = [];
+          _userResults = [];
+          _results = [];
+        });
+        return;
+      }
+
+      if (_showUserFilter) {
+        dynamic query = _supabase
+            .from('profiles')
+            .select('id, email, username');
+
+        if (user != null) {
+          query = query.neq('id', user.id);
+        }
+
+        if (searchText.isNotEmpty) {
+          query = query.or(
+            'username.ilike.%$searchText%,email.ilike.%$searchText%',
+          );
+        }
+
+        final usersRes = await query.limit(50);
+        final users = (usersRes as List)
+            .map((row) => Map<String, dynamic>.from(row as Map))
+            .toList();
+
         if (!mounted || requestId != _searchRequestId) return;
         setState(() {
           _fetchedData = [];
           _results = [];
+          _userResults = users;
         });
         return;
       }
@@ -225,15 +289,16 @@ class _SearchPageState extends State<SearchPage> {
             .toSet();
       }
 
-      List<Map<String, dynamic>> apiResults = [];
+      List<Map<String, dynamic>> fetchedData = [];
       if (searchText.isNotEmpty) {
         if (isBarcodeSearch) {
+          // Barcode flow keeps using API.
+          List<Map<String, dynamic>> apiResults = [];
           final product = await _foodApiService.fetchProductFromOFF(searchText);
           if (product != null) {
             apiResults = [
               {
                 ...product,
-                // Ensure scanned/typed barcode is available for favorites/details.
                 'code': (product['code'] ?? '').toString().isNotEmpty
                     ? product['code']
                     : searchText,
@@ -245,28 +310,50 @@ class _SearchPageState extends State<SearchPage> {
               searchText,
             );
           }
+
+          fetchedData = apiResults
+              .map(
+                (row) => {
+                  ...row,
+                  'prices': <Map<String, dynamic>>[],
+                  'isFavorite': favoriteCodes.contains(
+                    (row['code'] ?? '').toString(),
+                  ),
+                  'source': 'api',
+                },
+              )
+              .toList();
         } else {
-          apiResults = await _foodApiService.searchExternalProducts(searchText);
+          // Text search is Supabase-only.
+          final rows = await _supabase
+              .from('products')
+              .select('code, name, brand, p, c, f, kcal, prices(*)')
+              .or('name.ilike.%$searchText%,brand.ilike.%$searchText%')
+              .limit(100);
+
+          fetchedData = (rows as List)
+              .map((row) => Map<String, dynamic>.from(row as Map))
+              .map(
+                (row) => {
+                  ...row,
+                  'prices': List<Map<String, dynamic>>.from(
+                    (row['prices'] as List?) ?? const [],
+                  ),
+                  'isFavorite': favoriteCodes.contains(
+                    (row['code'] ?? '').toString(),
+                  ),
+                  'source': 'supabase',
+                },
+              )
+              .toList();
         }
       }
-
-      List<Map<String, dynamic>> fetchedData = apiResults
-          .map(
-            (product) => {
-              ...product,
-              'prices': <Map<String, dynamic>>[],
-              'isFavorite': favoriteCodes.contains(
-                (product['code'] ?? '').toString(),
-              ),
-              'source': 'api',
-            },
-          )
-          .toList();
 
       if (!mounted || requestId != _searchRequestId) return;
 
       setState(() {
         _favoritedProductCodes = favoriteCodes;
+        _userResults = [];
         _fetchedData = fetchedData;
         _results = _buildVisibleResults(
           source: _fetchedData,
@@ -343,6 +430,8 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   void _applyCurrentFiltersAndSort() {
+    if (_showUserFilter) return;
+
     final String searchText = _searchController.text.trim();
     final bool isBarcodeSearch = RegExp(r'^[0-9]+$').hasMatch(searchText);
     setState(() {
@@ -466,12 +555,16 @@ class _SearchPageState extends State<SearchPage> {
             child: TextField(
               controller: _searchController,
               decoration: InputDecoration(
-                hintText: "Search protein...",
+                hintText: _showUserFilter
+                    ? "Search users..."
+                    : "Search protein...",
                 prefixIcon: const Icon(Icons.search),
-                suffixIcon: IconButton(
-                  icon: const Icon(Icons.qr_code_scanner),
-                  onPressed: _openScanner,
-                ),
+                suffixIcon: _showUserFilter
+                    ? null
+                    : IconButton(
+                        icon: const Icon(Icons.qr_code_scanner),
+                        onPressed: _openScanner,
+                      ),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(20),
                 ),
@@ -485,49 +578,65 @@ class _SearchPageState extends State<SearchPage> {
             child: Row(
               children: [
                 FilterChip(
-                  label: Text(
-                    _maxPricePerGram == null
-                        ? "Max cent/g"
-                        : "≤${(_maxPricePerGram! * 100).toStringAsFixed(1)} cent/g",
+                  label: const Text("Users"),
+                  selected: _showUserFilter,
+                  onSelected: (selected) {
+                    setState(() {
+                      _showUserFilter = selected;
+                    });
+                    _runSearch(force: true);
+                  },
+                  selectedColor: Colors.blue[100],
+                ),
+                const SizedBox(width: 8),
+                if (!_showUserFilter)
+                  FilterChip(
+                    label: Text(
+                      _maxPricePerGram == null
+                          ? "Max cent/g"
+                          : "≤${(_maxPricePerGram! * 100).toStringAsFixed(1)} cent/g",
+                    ),
+                    selected: _maxPricePerGram != null,
+                    onSelected: (v) {
+                      if (v) {
+                        _showPricePerGramDialog();
+                      } else {
+                        _maxPricePerGram = null;
+                        _applyCurrentFiltersAndSort();
+                      }
+                    },
+                    selectedColor: Colors.green[100],
                   ),
-                  selected: _maxPricePerGram != null,
-                  onSelected: (v) {
-                    if (v) {
-                      _showPricePerGramDialog();
-                    } else {
-                      _maxPricePerGram = null;
+                if (!_showUserFilter) const SizedBox(width: 8),
+                if (!_showUserFilter)
+                  ChoiceChip(
+                    label: const Text("Ratio"),
+                    selected: _sortBy == 'efficiency',
+                    onSelected: (s) {
+                      _sortBy = s ? 'efficiency' : null;
                       _applyCurrentFiltersAndSort();
-                    }
-                  },
-                  selectedColor: Colors.green[100],
-                ),
-                const SizedBox(width: 8),
-                ChoiceChip(
-                  label: const Text("Ratio"),
-                  selected: _sortBy == 'efficiency',
-                  onSelected: (s) {
-                    _sortBy = s ? 'efficiency' : null;
-                    _applyCurrentFiltersAndSort();
-                  },
-                ),
-                const SizedBox(width: 8),
-                ChoiceChip(
-                  label: const Text("Protein"),
-                  selected: _sortBy == 'protein',
-                  onSelected: (s) {
-                    _sortBy = s ? 'protein' : null;
-                    _applyCurrentFiltersAndSort();
-                  },
-                ),
-                const SizedBox(width: 8),
-                ChoiceChip(
-                  label: const Text("Price/g"),
-                  selected: _sortBy == 'price',
-                  onSelected: (s) {
-                    _sortBy = s ? 'price' : null;
-                    _applyCurrentFiltersAndSort();
-                  },
-                ),
+                    },
+                  ),
+                if (!_showUserFilter) const SizedBox(width: 8),
+                if (!_showUserFilter)
+                  ChoiceChip(
+                    label: const Text("Protein"),
+                    selected: _sortBy == 'protein',
+                    onSelected: (s) {
+                      _sortBy = s ? 'protein' : null;
+                      _applyCurrentFiltersAndSort();
+                    },
+                  ),
+                if (!_showUserFilter) const SizedBox(width: 8),
+                if (!_showUserFilter)
+                  ChoiceChip(
+                    label: const Text("Price/g"),
+                    selected: _sortBy == 'price',
+                    onSelected: (s) {
+                      _sortBy = s ? 'price' : null;
+                      _applyCurrentFiltersAndSort();
+                    },
+                  ),
               ],
             ),
           ),
@@ -535,6 +644,55 @@ class _SearchPageState extends State<SearchPage> {
           Expanded(
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
+                : _showUserFilter
+                ? _userResults.isEmpty
+                      ? const Center(child: Text('No users found.'))
+                      : ListView.builder(
+                          itemCount: _userResults.length,
+                          itemBuilder: (context, index) {
+                            final user = _userResults[index];
+                            final String email =
+                                (user['email'] ?? 'unknown@email.com')
+                                    .toString();
+                            final String username = (user['username'] ?? '')
+                                .toString();
+                            final String title = username.isNotEmpty
+                                ? username
+                                : email.split('@').first;
+
+                            return Card(
+                              margin: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 6,
+                              ),
+                              child: ListTile(
+                                leading: CircleAvatar(
+                                  backgroundColor: Colors.blue[100],
+                                  child: Text(
+                                    title.isNotEmpty
+                                        ? title[0].toUpperCase()
+                                        : '?',
+                                  ),
+                                ),
+                                title: Text(title),
+                                subtitle: Text(email),
+                                trailing: const Icon(
+                                  Icons.arrow_forward_ios,
+                                  size: 16,
+                                ),
+                                onTap: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => UserFavoritesPage(
+                                      userId: (user['id'] ?? '').toString(),
+                                      userEmail: email,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        )
                 : _results.isEmpty
                 // CASE 1: NO RESULTS -> SHOW BUTTON
                 ? Center(
@@ -715,7 +873,7 @@ class _SearchPageState extends State<SearchPage> {
                                     color: Colors.red,
                                     size: 20,
                                   ),
-                                  onPressed: () => _toggleFavorite(p['code']),
+                                  onPressed: () => _toggleFavorite(p),
                                 ),
                               ),
                               const SizedBox(width: 3),
@@ -1122,140 +1280,6 @@ class _DiscoverPageState extends State<DiscoverPage> {
                 );
               },
             ),
-    );
-  }
-}
-
-// --- TAB 3: COMMUNITY (NEW!) ---
-class CommunityPage extends StatefulWidget {
-  const CommunityPage({super.key});
-  @override
-  State<CommunityPage> createState() => _CommunityPageState();
-}
-
-class _CommunityPageState extends State<CommunityPage> {
-  final _supabase = Supabase.instance.client;
-  List<dynamic> _users = [];
-  bool _loading = false;
-  final _userSearchController = TextEditingController();
-
-  @override
-  void initState() {
-    super.initState();
-    _searchUsers();
-  }
-
-  void _searchUsers() async {
-    setState(() => _loading = true);
-    try {
-      final currentUserId = _supabase.auth.currentUser!.id;
-      // We also fetch 'username' now
-      var query = _supabase.from('profiles').select().neq('id', currentUserId);
-
-      if (_userSearchController.text.isNotEmpty) {
-        // Search on username OR email
-        query = query.or(
-          'username.ilike.%${_userSearchController.text}%,email.ilike.%${_userSearchController.text}%',
-        );
-      }
-
-      final res = await query.limit(20);
-
-      final enrichedUsers = (res as List)
-          .map((user) => {...(user as Map), 'score': 0})
-          .toList();
-
-      setState(() => _users = enrichedUsers);
-    } catch (e) {
-      debugPrint("Community error: $e");
-    } finally {
-      setState(() => _loading = false);
-    }
-  }
-
-  void _viewUserFavorites(Map<String, dynamic> userProfile) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => UserFavoritesPage(
-          userId: userProfile['id'],
-          userEmail: userProfile['email'],
-        ),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("Find users"),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.person_outline),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (c) => const ProfilePage()),
-            ),
-          ),
-          IconButton(icon: const Icon(Icons.refresh), onPressed: _searchUsers),
-        ],
-      ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: TextField(
-              controller: _userSearchController,
-              decoration: InputDecoration(
-                labelText: "Search by email...",
-                prefixIcon: const Icon(Icons.person_search),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(20),
-                ),
-              ),
-              onChanged: (_) => _searchUsers(),
-            ),
-          ),
-          Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator())
-                : ListView.builder(
-                    itemCount: _users.length,
-                    itemBuilder: (context, index) {
-                      final user = _users[index];
-                      return Card(
-                        margin: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 6,
-                        ),
-                        child: ListTile(
-                          leading: CircleAvatar(
-                            backgroundColor: Colors.green[100],
-                            child: Text(
-                              (user['username'] ?? user['email'])[0]
-                                  .toUpperCase(),
-                            ),
-                          ),
-                          // SHOW USERNAME IF AVAILABLE, OTHERWISE EMAIL
-                          title: Text(
-                            user['username'] ?? user['email'].split('@')[0],
-                          ),
-                          subtitle: Text(
-                            "Contribution Score: ${user['score']}",
-                          ),
-                          trailing: const Icon(
-                            Icons.arrow_forward_ios,
-                            size: 16,
-                          ),
-                          onTap: () => _viewUserFavorites(user),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-        ],
-      ),
     );
   }
 }

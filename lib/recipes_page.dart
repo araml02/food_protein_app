@@ -310,37 +310,41 @@ class _RecipesPageState extends State<RecipesPage> {
 
   Future<Map<String, dynamic>?> _showProductPicker() async {
     final searchController = TextEditingController();
+    final List<Map<String, dynamic>> favoriteProducts = [];
     final List<Map<String, dynamic>> results = [];
     bool isLoading = false;
 
-    Future<void> search(StateSetter setState) async {
+    void search(StateSetter setState) {
       final query = searchController.text.trim();
-      if (query.length < 2) {
-        setState(() => results.clear());
-        return;
-      }
 
-      setState(() => isLoading = true);
-      try {
-        final rows = await _supabase
-            .from('products')
-            .select('code, name, brand, p, kcal')
-            .or('name.ilike.%$query%,brand.ilike.%$query%')
-            .limit(25);
+      final queryWords = query
+          .toLowerCase()
+          .split(' ')
+          .where((w) => w.isNotEmpty)
+          .toList();
 
-        setState(() {
-          results
-            ..clear()
-            ..addAll(
-              (rows as List).map((e) => Map<String, dynamic>.from(e as Map)),
-            );
-        });
-      } finally {
-        setState(() => isLoading = false);
-      }
+      final filtered = favoriteProducts
+          .where((product) {
+            if (queryWords.isEmpty) return true;
+            final combined =
+                '${product['name'] ?? ''} ${product['brand'] ?? ''}'
+                    .toLowerCase();
+            return queryWords.every((word) => combined.contains(word));
+          })
+          .take(50)
+          .toList();
+
+      setState(() {
+        results
+          ..clear()
+          ..addAll(filtered);
+      });
     }
 
     if (!mounted) return null;
+
+    final user = _supabase.auth.currentUser;
+    if (user == null) return null;
 
     return showModalBottomSheet<Map<String, dynamic>>(
       context: context,
@@ -348,6 +352,34 @@ class _RecipesPageState extends State<RecipesPage> {
       builder: (ctx) {
         return StatefulBuilder(
           builder: (context, setState) {
+            if (favoriteProducts.isEmpty && !isLoading) {
+              isLoading = true;
+              _supabase
+                  .from('favorites')
+                  .select('products(code, name, brand, p, kcal)')
+                  .eq('user_id', user.id)
+                  .then((rows) {
+                    if (!context.mounted) return;
+                    final loaded = (rows as List)
+                        .map((e) => e['products'])
+                        .where((p) => p != null)
+                        .map((p) => Map<String, dynamic>.from(p as Map))
+                        .toList();
+
+                    setState(() {
+                      favoriteProducts
+                        ..clear()
+                        ..addAll(loaded);
+                      isLoading = false;
+                    });
+                    search(setState);
+                  })
+                  .catchError((_) {
+                    if (!context.mounted) return;
+                    setState(() => isLoading = false);
+                  });
+            }
+
             return Padding(
               padding: EdgeInsets.only(
                 left: 16,
@@ -362,7 +394,7 @@ class _RecipesPageState extends State<RecipesPage> {
                     TextField(
                       controller: searchController,
                       decoration: const InputDecoration(
-                        hintText: 'Search products',
+                        hintText: 'Search in your favorites',
                         prefixIcon: Icon(Icons.search),
                         border: OutlineInputBorder(),
                       ),
@@ -372,19 +404,25 @@ class _RecipesPageState extends State<RecipesPage> {
                     if (isLoading) const LinearProgressIndicator(),
                     const SizedBox(height: 6),
                     Expanded(
-                      child: ListView.builder(
-                        itemCount: results.length,
-                        itemBuilder: (context, index) {
-                          final product = results[index];
-                          return ListTile(
-                            title: Text((product['name'] ?? '').toString()),
-                            subtitle: Text(
-                              '${product['brand'] ?? ''}  •  ${(product['p'] ?? 0).toString()}g/100g',
+                      child: results.isEmpty
+                          ? const Center(
+                              child: Text('No matching favorite products.'),
+                            )
+                          : ListView.builder(
+                              itemCount: results.length,
+                              itemBuilder: (context, index) {
+                                final product = results[index];
+                                return ListTile(
+                                  title: Text(
+                                    (product['name'] ?? '').toString(),
+                                  ),
+                                  subtitle: Text(
+                                    '${product['brand'] ?? ''}  •  ${(product['p'] ?? 0).toString()}g/100g',
+                                  ),
+                                  onTap: () => Navigator.pop(ctx, product),
+                                );
+                              },
                             ),
-                            onTap: () => Navigator.pop(ctx, product),
-                          );
-                        },
-                      ),
                     ),
                   ],
                 ),
